@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Instituto Juan Bosco</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', sans-serif; }
+  .ib-brand { font-family: 'Fraunces', serif; }
+</style>
+</head>
+<body class="bg-[#F4F1EB]">
+<div id="app"></div>
+
+<script>
+// ============================================================
+// ⚠️ PENDIENTE: reemplaza estos dos valores con los de TU proyecto
+// de Supabase nuevo (Project Settings > API > Project URL / anon public key).
+// No uses el mismo proyecto de la cafetería.
+// ============================================================
+const SUPABASE_URL = "PENDIENTE_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "PENDIENTE_SUPABASE_ANON_KEY";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Módulos del sistema y qué roles pueden verlos.
+// Los marcados "construido: false" muestran un placeholder por ahora.
+const MENU = [
+  { id: "inicio", label: "Inicio", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
+  { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
+  { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
+  { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: false },
+  { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: false },
+  { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: false },
+  { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
+  { id: "avisos", label: "Disciplina y Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
+  { id: "usuarios", label: "Usuarios del Sistema", roles: ["Administrador"], construido: false },
+];
+
+const state = {
+  sesion: null,   // sesión de Supabase Auth
+  perfil: null,   // fila de la tabla perfiles (nombre_completo, rol)
+  seccion: "inicio",
+};
+
+const app = document.getElementById("app");
+
+function errBox(texto) {
+  return `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#F5E4E1; color:#B5453A">${texto}</div>`;
+}
+function okBox(texto) {
+  return `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#E6F0EA; color:#3F7A5E">${texto}</div>`;
+}
+
+// ============================================================
+// Arranque: revisa si ya hay sesión activa de Supabase Auth
+// ============================================================
+async function init() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) {
+    state.sesion = session;
+    await cargarPerfil();
+  } else {
+    renderLogin();
+  }
+
+  sb.auth.onAuthStateChange((_event, session) => {
+    state.sesion = session;
+    if (!session) {
+      state.perfil = null;
+      renderLogin();
+    }
+  });
+}
+
+async function cargarPerfil() {
+  const { data, error } = await sb
+    .from("perfiles")
+    .select("nombre_completo, rol, activo")
+    .eq("id", state.sesion.user.id)
+    .single();
+
+  if (error || !data) {
+    renderLogin(errBox("No se encontró tu perfil en el sistema. Contacta al Administrador."));
+    return;
+  }
+  if (!data.activo) {
+    await sb.auth.signOut();
+    renderLogin(errBox("Tu cuenta está desactivada. Contacta al Administrador."));
+    return;
+  }
+  state.perfil = data;
+  renderApp();
+}
+
+// ============================================================
+// Pantalla de login
+// ============================================================
+function renderLogin(mensajeExtra) {
+  app.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center p-5">
+      <div class="w-full max-w-sm p-6 rounded-2xl bg-white border" style="border-color:#E1DED5">
+        <div class="text-center mb-6">
+          <div id="loginLogo" class="mx-auto mb-3 w-16 h-16 rounded-full flex items-center justify-center text-2xl" style="background:#F4F1EB; color:#1C2B3A">🏫</div>
+          <div class="ib-brand text-xl font-semibold" style="color:#1C2B3A">Instituto Juan Bosco</div>
+          <div class="text-xs mt-1" style="color:#6C7B8A">Sistema de control escolar</div>
+        </div>
+
+        ${mensajeExtra || ""}
+
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Correo</label>
+        <input id="loginCorreo" type="email" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Contraseña</label>
+        <input id="loginPassword" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5" />
+        <div id="loginMsg"></div>
+        <button id="loginBtn" class="w-full py-2.5 rounded-lg text-sm font-bold" style="background:#1C2B3A; color:#F4F1EB">Entrar</button>
+      </div>
+    </div>`;
+
+  document.getElementById("loginPassword").addEventListener("keydown", e => { if (e.key === "Enter") iniciarSesion(); });
+  document.getElementById("loginBtn").addEventListener("click", iniciarSesion);
+}
+
+async function iniciarSesion() {
+  const correo = document.getElementById("loginCorreo").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const msg = document.getElementById("loginMsg");
+  msg.innerHTML = "";
+
+  if (!correo || !password) { msg.innerHTML = errBox("Escribe tu correo y contraseña."); return; }
+
+  const { data, error } = await sb.auth.signInWithPassword({ email: correo, password });
+  if (error) { msg.innerHTML = errBox("Correo o contraseña incorrectos."); return; }
+
+  state.sesion = data.session;
+  await cargarPerfil();
+}
+
+async function cerrarSesion() {
+  await sb.auth.signOut();
+  state.perfil = null;
+  renderLogin();
+}
+
+// ============================================================
+// App principal: header + menú + contenido de la sección
+// ============================================================
+function renderApp() {
+  const menuVisible = MENU.filter(m => m.roles.includes(state.perfil.rol));
+
+  app.innerHTML = `
+    <div class="min-h-screen">
+      <div class="px-4 py-3 flex items-center justify-between" style="background:#1C2B3A">
+        <div class="flex items-center gap-3">
+          <div id="headerLogo" class="w-9 h-9 rounded-full flex items-center justify-center text-lg" style="background:#F4F1EB">🏫</div>
+          <div>
+            <div class="ib-brand text-base font-semibold" style="color:#F4F1EB">Instituto Juan Bosco</div>
+            <div class="text-xs" style="color:#9BA9B8">${state.perfil.nombre_completo} · ${state.perfil.rol}</div>
+          </div>
+        </div>
+        <button id="logoutBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#B5453A; color:#fff">Cerrar sesión</button>
+      </div>
+
+      <div class="flex flex-wrap gap-1 px-4 py-2" style="background:#fff; border-bottom:1px solid #E1DED5">
+        ${menuVisible.map(m => `
+          <button class="menuBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-id="${m.id}"
+            style="background:${state.seccion === m.id ? "#1C2B3A" : "transparent"}; color:${state.seccion === m.id ? "#F4F1EB" : "#1C2B3A"}">
+            ${m.label}
+          </button>`).join("")}
+      </div>
+
+      <div id="main" class="p-5"></div>
+    </div>`;
+
+  document.getElementById("logoutBtn").addEventListener("click", cerrarSesion);
+  document.querySelectorAll(".menuBtn").forEach(b => b.addEventListener("click", () => {
+    state.seccion = b.dataset.id;
+    renderApp();
+  }));
+
+  renderSeccion();
+}
+
+function renderSeccion() {
+  const main = document.getElementById("main");
+  if (state.seccion === "inicio") return renderInicio(main);
+
+  const modulo = MENU.find(m => m.id === state.seccion);
+  if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
+}
+
+function renderInicio(main) {
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-2" style="color:#1C2B3A">Bienvenido/a, ${state.perfil.nombre_completo}</h2>
+    <p class="text-sm" style="color:#6C7B8A">Tu rol actual es: <strong>${state.perfil.rol}</strong></p>
+    <div class="mt-4 p-4 rounded-xl bg-white border max-w-md" style="border-color:#E1DED5">
+      <p class="text-sm" style="color:#1C2B3A">Este es el punto de partida del sistema. Los módulos se irán habilitando conforme se construyan:</p>
+      <ol class="text-sm mt-2 list-decimal list-inside" style="color:#6C7B8A">
+        <li>Alumnos y Grupos</li>
+        <li>Oficios y Documentos</li>
+        <li>Calificaciones y Evaluación</li>
+        <li>Catedráticos</li>
+      </ol>
+    </div>`;
+}
+
+function renderEnConstruccion(main, nombreModulo) {
+  main.innerHTML = `
+    <div class="p-6 rounded-xl bg-white border max-w-md text-center" style="border-color:#E1DED5">
+      <p class="text-sm font-semibold mb-1" style="color:#1C2B3A">${nombreModulo}</p>
+      <p class="text-xs" style="color:#6C7B8A">Este módulo está en construcción.</p>
+    </div>`;
+}
+
+init();
+</script>
+</body>
+</html>
