@@ -51,7 +51,7 @@ const MENU = [
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: false },
-  { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: false },
+  { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: false },
   { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
   { id: "avisos", label: "Disciplina y Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
@@ -210,6 +210,7 @@ function renderSeccion() {
   if (state.seccion === "mobiliario") return renderMobiliario(main);
   if (state.seccion === "alumnos") return renderAlumnos(main);
   if (state.seccion === "accesos") return renderAccesos(main);
+  if (state.seccion === "catedraticos") return renderCatedraticos(main);
 
   const modulo = MENU.find(m => m.id === state.seccion);
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
@@ -1014,6 +1015,289 @@ function renderAccesos(main) {
 
       document.getElementById("gfImprimirBtn").addEventListener("click", () => window.print());
     }
+  }
+}
+
+// ============================================================
+// Módulo Catedráticos (Profesores, Materias, Asignaciones)
+// ============================================================
+function renderCatedraticos(main) {
+  let tabActivo = "profesores";
+  const esAdmin = state.perfil.rol === "Administrador";
+
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Catedráticos</h2>
+    <div class="flex gap-1 mb-4">
+      <button class="caTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="profesores">Profesores</button>
+      <button class="caTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="materias">Materias</button>
+      <button class="caTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="asignaciones">Asignaciones</button>
+    </div>
+    <div id="caContenido"></div>`;
+
+  function pintarTabs() {
+    document.querySelectorAll(".caTabBtn").forEach(b => {
+      const activo = b.dataset.tab === tabActivo;
+      b.style.background = activo ? "#1E3A8A" : "#F4F1EB";
+      b.style.color = activo ? "#fff" : "#1E3A8A";
+    });
+  }
+  document.querySelectorAll(".caTabBtn").forEach(b => b.addEventListener("click", () => {
+    tabActivo = b.dataset.tab;
+    pintarTabs();
+    cargarTab();
+  }));
+  pintarTabs();
+  cargarTab();
+
+  function cargarTab() {
+    const cont = document.getElementById("caContenido");
+    if (tabActivo === "profesores") return renderProfesores(cont);
+    if (tabActivo === "materias") return renderMaterias(cont);
+    if (tabActivo === "asignaciones") return renderAsignaciones(cont);
+  }
+
+  // ---------- Profesores ----------
+  async function renderProfesores(cont) {
+    cont.innerHTML = `
+      <div class="max-w-lg">
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <div class="flex gap-2">
+            <input id="prfBuscarInput" placeholder="Buscar profesor por nombre…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <button id="prfBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+          </div>
+          <p class="text-xs mt-2" style="color:#6C7B8A">Para dar de alta un nuevo profesor, créalo primero en Authentication &gt; Users de Supabase (correo y contraseña); aquí solo se edita su nombre, rol y estatus.</p>
+        </div>
+        <div id="prfResultados"></div>
+        <div id="prfFormWrap"></div>
+      </div>`;
+
+    document.getElementById("prfBuscarBtn").addEventListener("click", buscar);
+    document.getElementById("prfBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+
+    async function buscar() {
+      const criterio = document.getElementById("prfBuscarInput").value.trim();
+      const resCont = document.getElementById("prfResultados");
+      if (!criterio) { resCont.innerHTML = ""; return; }
+      resCont.innerHTML = `<p class="text-xs mt-2" style="color:#6C7B8A">Buscando…</p>`;
+      const { data, error } = await sb.from("perfiles").select("*").ilike("nombre_completo", `%${criterio}%`).order("nombre_completo");
+      if (error) { resCont.innerHTML = errBox(error.message); return; }
+      resCont.innerHTML = (data || []).length === 0
+        ? `<p class="text-xs mt-2" style="color:#6C7B8A">Sin resultados.</p>`
+        : `<div class="mt-2 space-y-1">${data.map((p, i) => `
+            <button class="prfSelBtn w-full text-left px-3 py-2 rounded-lg text-sm bg-white border" data-idx="${i}" style="border-color:#E1DED5; color:#1E3A8A; ${!p.activo ? "opacity:0.5" : ""}">
+              ${p.nombre_completo} <span class="text-xs" style="color:#6C7B8A">(${p.rol}${!p.activo ? " · inactivo" : ""})</span>
+            </button>`).join("")}</div>`;
+      resCont.querySelectorAll(".prfSelBtn").forEach(b => b.addEventListener("click", () => mostrarFormularioProfesor(data[Number(b.dataset.idx)])));
+    }
+
+    function mostrarFormularioProfesor(perfil) {
+      const wrap = document.getElementById("prfFormWrap");
+      wrap.innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mt-3" style="border-color:#E1DED5">
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nombre completo</label>
+          <input id="prfNombre" value="${perfil.nombre_completo}" ${esAdmin ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Rol</label>
+          <select id="prfRol" ${esAdmin ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${["Administrador", "Director", "Secretaria", "Profesor"].map(r => `<option value="${r}" ${perfil.rol === r ? "selected" : ""}>${r}</option>`).join("")}
+          </select>
+          <label class="flex items-center gap-2 text-sm mb-3" style="color:#1E3A8A">
+            <input type="checkbox" id="prfActivo" ${perfil.activo ? "checked" : ""} ${esAdmin ? "" : "disabled"} /> Cuenta activa
+          </label>
+          <div id="prfMsg"></div>
+          ${esAdmin ? `<button id="prfGuardar" class="w-full py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar cambios</button>` : `<p class="text-xs" style="color:#B5453A">Solo el Administrador puede editar estos datos.</p>`}
+        </div>`;
+
+      if (esAdmin) {
+        document.getElementById("prfGuardar").addEventListener("click", async () => {
+          const msg = document.getElementById("prfMsg");
+          const { error } = await sb.from("perfiles").update({
+            nombre_completo: document.getElementById("prfNombre").value.trim(),
+            rol: document.getElementById("prfRol").value,
+            activo: document.getElementById("prfActivo").checked,
+          }).eq("id", perfil.id);
+          if (error) { msg.innerHTML = errBox(error.message); return; }
+          msg.innerHTML = okBox("Cambios guardados.");
+        });
+      }
+    }
+  }
+
+  // ---------- Materias ----------
+  async function renderMaterias(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("materias").select("*").order("nivel").order("nombre");
+    if (error) { cont.innerHTML = errBox(error.message); return; }
+
+    const materias = data || [];
+
+    cont.innerHTML = `
+      <div class="max-w-lg">
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nueva materia</p>
+          <div class="flex gap-2">
+            <input id="matNombre" placeholder="Nombre de la materia" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <select id="matNivel" class="px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+              <option value="Secundaria">Secundaria</option>
+              <option value="Preparatoria">Preparatoria</option>
+            </select>
+          </div>
+          <div id="matMsg" class="mt-2"></div>
+          <button id="matGuardar" class="mt-2 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Secundaria</p>
+            ${materias.filter(m => m.nivel === "Secundaria").map(m => `<div class="p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">${m.nombre}</div>`).join("") || `<p class="text-xs" style="color:#6C7B8A">Sin materias.</p>`}
+          </div>
+          <div>
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Preparatoria</p>
+            ${materias.filter(m => m.nivel === "Preparatoria").map(m => `<div class="p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">${m.nombre}</div>`).join("") || `<p class="text-xs" style="color:#6C7B8A">Sin materias.</p>`}
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById("matGuardar").addEventListener("click", async () => {
+      const nombre = document.getElementById("matNombre").value.trim();
+      const nivel = document.getElementById("matNivel").value;
+      const msg = document.getElementById("matMsg");
+      msg.innerHTML = "";
+      if (!nombre) { msg.innerHTML = errBox("Escribe el nombre de la materia."); return; }
+      const { error } = await sb.from("materias").insert({ nombre, nivel });
+      if (error) { msg.innerHTML = errBox(error.message); return; }
+      renderMaterias(cont);
+    });
+  }
+
+  // ---------- Asignaciones ----------
+  async function renderAsignaciones(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+
+    const [ciclosRes, materiasRes, profesRes] = await Promise.all([
+      sb.from("ciclos_escolares").select("*").order("fecha_inicio", { ascending: false }),
+      sb.from("materias").select("*").order("nombre"),
+      sb.from("perfiles").select("id, nombre_completo").eq("rol", "Profesor").eq("activo", true).order("nombre_completo"),
+    ]);
+    if (ciclosRes.error) { cont.innerHTML = errBox(ciclosRes.error.message); return; }
+
+    const todosCiclos = ciclosRes.data || [];
+    const todasMaterias = materiasRes.data || [];
+    const profesores = profesRes.data || [];
+
+    let nivelSel = "Secundaria";
+    let cicloSel = null;
+    let grupoSel = null;
+
+    async function pintar() {
+      const ciclosNivel = todosCiclos.filter(c => c.nivel === nivelSel);
+      const cicloActivo = ciclosNivel.find(c => c.activo) || ciclosNivel[0];
+      if (!cicloSel || !ciclosNivel.find(c => c.id === cicloSel)) cicloSel = cicloActivo ? cicloActivo.id : null;
+
+      if (!cicloSel) {
+        cont.innerHTML = `
+          <div class="max-w-lg">${nivelSelectHtml()}
+            <p class="text-sm mt-3" style="color:#6C7B8A">No hay ciclos de ${nivelSel} capturados.</p>
+          </div>`;
+        document.getElementById("asNivelSel").addEventListener("change", e => { nivelSel = e.target.value; cicloSel = null; grupoSel = null; pintar(); });
+        return;
+      }
+
+      const { data: grupos, error: errGrupos } = await sb.from("grupos").select("id, letra, grados(nombre)").eq("ciclo_escolar_id", cicloSel).order("letra");
+      if (errGrupos) { cont.innerHTML = errBox(errGrupos.message); return; }
+
+      if (!grupoSel || !(grupos || []).find(g => g.id === grupoSel)) grupoSel = grupos && grupos[0] ? grupos[0].id : null;
+
+      const materiasNivel = todasMaterias.filter(m => m.nivel === nivelSel);
+
+      let asignaciones = [];
+      if (grupoSel) {
+        const { data } = await sb
+          .from("profesor_materias_grupos")
+          .select("id, perfiles(nombre_completo), materias(nombre)")
+          .eq("grupo_id", grupoSel)
+          .eq("ciclo_escolar_id", cicloSel);
+        asignaciones = data || [];
+      }
+
+      cont.innerHTML = `
+        <div class="max-w-lg">
+          ${nivelSelectHtml()}
+
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar (${nivelSel})</label>
+          <select id="asCicloSel" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${ciclosNivel.map(c => `<option value="${c.id}" ${c.id === cicloSel ? "selected" : ""}>${c.nombre}${c.activo ? " (Activo)" : ""}</option>`).join("")}
+          </select>
+
+          ${(grupos || []).length === 0 ? `<p class="text-sm" style="color:#6C7B8A">No hay grupos capturados para este ciclo.</p>` : `
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Grupo</label>
+          <select id="asGrupoSel" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${grupos.map(g => `<option value="${g.id}" ${g.id === grupoSel ? "selected" : ""}>${g.grados.nombre} "${g.letra}"</option>`).join("")}
+          </select>
+
+          <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nueva asignación</p>
+            <div class="grid grid-cols-2 gap-2 mb-2">
+              <select id="asProfesorSel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+                ${profesores.map(p => `<option value="${p.id}">${p.nombre_completo}</option>`).join("")}
+              </select>
+              <select id="asMateriaSel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+                ${materiasNivel.map(m => `<option value="${m.id}">${m.nombre}</option>`).join("")}
+              </select>
+            </div>
+            <div id="asMsg"></div>
+            <button id="asAsignarBtn" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Asignar</button>
+          </div>
+
+          <div class="space-y-2">
+            ${asignaciones.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Sin asignaciones para este grupo.</p>` : asignaciones.map(a => `
+              <div class="p-3 rounded-xl bg-white border flex items-center justify-between" style="border-color:#E1DED5">
+                <div>
+                  <p class="text-sm font-semibold" style="color:#1E3A8A">${a.materias.nombre}</p>
+                  <p class="text-xs" style="color:#6C7B8A">${a.perfiles.nombre_completo}</p>
+                </div>
+                <button class="asQuitarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${a.id}" style="background:#F5E4E1; color:#B5453A">Quitar</button>
+              </div>`).join("")}
+          </div>
+          `}
+        </div>`;
+
+      document.getElementById("asNivelSel").addEventListener("change", e => { nivelSel = e.target.value; cicloSel = null; grupoSel = null; pintar(); });
+      document.getElementById("asCicloSel").addEventListener("change", e => { cicloSel = e.target.value; grupoSel = null; pintar(); });
+
+      const grupoSelEl = document.getElementById("asGrupoSel");
+      if (grupoSelEl) {
+        grupoSelEl.addEventListener("change", e => { grupoSel = e.target.value; pintar(); });
+
+        document.getElementById("asAsignarBtn").addEventListener("click", async () => {
+          const msg = document.getElementById("asMsg");
+          msg.innerHTML = "";
+          const profesor_id = document.getElementById("asProfesorSel").value;
+          const materia_id = document.getElementById("asMateriaSel").value;
+          if (!profesor_id || !materia_id) { msg.innerHTML = errBox("Selecciona profesor y materia."); return; }
+          const { error } = await sb.from("profesor_materias_grupos").insert({
+            profesor_id, materia_id, grupo_id: grupoSel, ciclo_escolar_id: cicloSel,
+          });
+          if (error) { msg.innerHTML = errBox(error.message); return; }
+          pintar();
+        });
+
+        cont.querySelectorAll(".asQuitarBtn").forEach(b => b.addEventListener("click", async () => {
+          await sb.from("profesor_materias_grupos").delete().eq("id", b.dataset.id);
+          pintar();
+        }));
+      }
+    }
+
+    function nivelSelectHtml() {
+      return `
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
+        <select id="asNivelSel" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+          <option value="Secundaria" ${nivelSel === "Secundaria" ? "selected" : ""}>Secundaria</option>
+          <option value="Preparatoria" ${nivelSel === "Preparatoria" ? "selected" : ""}>Preparatoria</option>
+        </select>`;
+    }
+
+    pintar();
   }
 }
 
