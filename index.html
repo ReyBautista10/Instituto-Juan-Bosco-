@@ -443,44 +443,69 @@ function renderAlumnos(main) {
     const { data, error } = await sb.from("ciclos_escolares").select("*").order("fecha_inicio", { ascending: false });
     if (error) { cont.innerHTML = errBox(error.message); return; }
 
+    const ciclos = data || [];
+    const porNivel = { Secundaria: ciclos.filter(c => c.nivel === "Secundaria"), Preparatoria: ciclos.filter(c => c.nivel === "Preparatoria") };
+
+    function listaCiclosHtml(nivel) {
+      const lista = porNivel[nivel];
+      return lista.length === 0
+        ? `<p class="text-sm" style="color:#6C7B8A">Sin ciclos capturados.</p>`
+        : lista.map(c => `
+          <div class="p-3 rounded-xl bg-white border flex items-center justify-between mb-2" style="border-color:#E1DED5">
+            <div>
+              <p class="text-sm font-semibold" style="color:#1E3A8A">${c.nombre} ${c.activo ? '<span class="text-xs font-normal" style="color:#3F7A5E">(Activo)</span>' : ""}</p>
+              <p class="text-xs" style="color:#6C7B8A">${c.fecha_inicio} a ${c.fecha_fin}</p>
+            </div>
+            ${!c.activo ? `<button class="ccActivarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${c.id}" data-nivel="${nivel}" style="background:#F4F1EB; color:#1E3A8A">Marcar activo</button>` : ""}
+          </div>`).join("");
+    }
+
     cont.innerHTML = `
-      <div class="max-w-lg">
+      <div class="max-w-2xl">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
           <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nuevo ciclo escolar</p>
-          <div class="grid grid-cols-3 gap-2 mb-2">
-            <input id="ccNombre" placeholder="2026-2027" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          <div class="grid grid-cols-4 gap-2 mb-2">
+            <select id="ccNivel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+              <option value="Secundaria">Secundaria (anual)</option>
+              <option value="Preparatoria">Preparatoria (semestral)</option>
+            </select>
+            <input id="ccNombre" placeholder="Ej. 2026-2027 o 2026-2027 Sem 1" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
             <input id="ccInicio" type="date" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
             <input id="ccFin" type="date" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
           </div>
           <div id="ccMsg"></div>
           <button id="ccGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
         </div>
-        <div class="space-y-2">
-          ${(data || []).length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay ciclos escolares capturados.</p>` : data.map(c => `
-            <div class="p-3 rounded-xl bg-white border flex items-center justify-between" style="border-color:#E1DED5">
-              <div>
-                <p class="text-sm font-semibold" style="color:#1E3A8A">${c.nombre} ${c.activo ? '<span class="text-xs font-normal" style="color:#3F7A5E">(Activo)</span>' : ""}</p>
-                <p class="text-xs" style="color:#6C7B8A">${c.fecha_inicio} a ${c.fecha_fin}</p>
-              </div>
-              ${!c.activo ? `<button class="ccActivarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${c.id}" style="background:#F4F1EB; color:#1E3A8A">Marcar activo</button>` : ""}
-            </div>`).join("")}
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Secundaria</p>
+            ${listaCiclosHtml("Secundaria")}
+          </div>
+          <div>
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Preparatoria</p>
+            ${listaCiclosHtml("Preparatoria")}
+          </div>
         </div>
       </div>`;
 
     document.getElementById("ccGuardar").addEventListener("click", async () => {
+      const nivel = document.getElementById("ccNivel").value;
       const nombre = document.getElementById("ccNombre").value.trim();
       const inicio = document.getElementById("ccInicio").value;
       const fin = document.getElementById("ccFin").value;
       const msg = document.getElementById("ccMsg");
       msg.innerHTML = "";
       if (!nombre || !inicio || !fin) { msg.innerHTML = errBox("Completa nombre y ambas fechas."); return; }
-      const { error } = await sb.from("ciclos_escolares").insert({ nombre, fecha_inicio: inicio, fecha_fin: fin });
+      const { error } = await sb.from("ciclos_escolares").insert({ nivel, nombre, fecha_inicio: inicio, fecha_fin: fin });
       if (error) { msg.innerHTML = errBox(error.message); return; }
       renderCiclos(cont);
     });
 
     cont.querySelectorAll(".ccActivarBtn").forEach(b => b.addEventListener("click", async () => {
-      await sb.from("ciclos_escolares").update({ activo: false }).not("id", "is", null);
+      // Solo se desactivan los ciclos del MISMO nivel — Secundaria y Preparatoria
+      // llevan cada quien su propio ciclo activo, sin pisarse entre sí.
+      await sb.from("ciclos_escolares").update({ activo: false }).eq("nivel", b.dataset.nivel);
       await sb.from("ciclos_escolares").update({ activo: true }).eq("id", b.dataset.id);
       renderCiclos(cont);
     }));
@@ -496,23 +521,39 @@ function renderAlumnos(main) {
     ]);
     if (ciclosRes.error) { cont.innerHTML = errBox(ciclosRes.error.message); return; }
 
-    const ciclos = ciclosRes.data || [];
-    const grados = gradosRes.data || [];
+    const todosCiclos = ciclosRes.data || [];
+    const todosGrados = gradosRes.data || [];
     const profesores = profesRes.data || [];
-    const cicloActivo = ciclos.find(c => c.activo) || ciclos[0];
 
-    if (!cicloActivo) {
-      cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">Primero crea un ciclo escolar en la pestaña "Ciclos Escolares".</p>`;
-      return;
-    }
-    if (grados.length === 0) {
+    if (todosGrados.length === 0) {
       cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay grados capturados. Corre el SQL de grados que te compartimos.</p>`;
       return;
     }
 
-    let cicloSeleccionado = cicloActivo.id;
+    let nivelSeleccionado = "Secundaria";
+    let cicloSeleccionado = null;
+
+    function ciclosDelNivel() { return todosCiclos.filter(c => c.nivel === nivelSeleccionado); }
+    function gradosDelNivel() { return todosGrados.filter(g => g.nivel === nivelSeleccionado); }
 
     async function pintarGrupos() {
+      const ciclos = ciclosDelNivel();
+      const grados = gradosDelNivel();
+      const cicloActivo = ciclos.find(c => c.activo) || ciclos[0];
+      if (!cicloSeleccionado || !ciclos.find(c => c.id === cicloSeleccionado)) {
+        cicloSeleccionado = cicloActivo ? cicloActivo.id : null;
+      }
+
+      if (!cicloSeleccionado) {
+        cont.innerHTML = `
+          <div class="max-w-lg">
+            ${selectorNivelHtml()}
+            <p class="text-sm mt-3" style="color:#6C7B8A">No hay ningún ciclo escolar de ${nivelSeleccionado} capturado. Créalo primero en la pestaña "Ciclos Escolares".</p>
+          </div>`;
+        document.getElementById("grNivelSel").addEventListener("change", (e) => { nivelSeleccionado = e.target.value; cicloSeleccionado = null; pintarGrupos(); });
+        return;
+      }
+
       const { data, error } = await sb
         .from("grupos")
         .select("id, letra, grado_id, profesor_titular_id, grados(nombre, nivel), perfiles(nombre_completo)")
@@ -522,16 +563,18 @@ function renderAlumnos(main) {
 
       cont.innerHTML = `
         <div class="max-w-lg">
-          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar</label>
+          ${selectorNivelHtml()}
+
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar (${nivelSeleccionado})</label>
           <select id="grCicloSel" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
-            ${ciclos.map(c => `<option value="${c.id}" ${c.id === cicloSeleccionado ? "selected" : ""}>${c.nombre}</option>`).join("")}
+            ${ciclos.map(c => `<option value="${c.id}" ${c.id === cicloSeleccionado ? "selected" : ""}>${c.nombre}${c.activo ? " (Activo)" : ""}</option>`).join("")}
           </select>
 
           <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nuevo grupo</p>
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nuevo grupo de ${nivelSeleccionado}</p>
             <div class="grid grid-cols-3 gap-2 mb-2">
               <select id="grGradoSel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
-                ${grados.map(g => `<option value="${g.id}">${g.nombre} (${g.nivel})</option>`).join("")}
+                ${grados.map(g => `<option value="${g.id}">${g.nombre}</option>`).join("")}
               </select>
               <input id="grLetra" placeholder="Letra (A, B…)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
               <select id="grProfesorSel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
@@ -546,11 +589,13 @@ function renderAlumnos(main) {
           <div class="space-y-2">
             ${(data || []).length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Sin grupos capturados para este ciclo.</p>` : data.map(g => `
               <div class="p-3 rounded-xl bg-white border" style="border-color:#E1DED5">
-                <p class="text-sm font-semibold" style="color:#1E3A8A">${g.grados.nombre} "${g.letra}" <span class="text-xs font-normal" style="color:#6C7B8A">(${g.grados.nivel})</span></p>
+                <p class="text-sm font-semibold" style="color:#1E3A8A">${g.grados.nombre} "${g.letra}"</p>
                 <p class="text-xs" style="color:#6C7B8A">Titular: ${g.perfiles?.nombre_completo || "Sin asignar"}</p>
               </div>`).join("")}
           </div>
         </div>`;
+
+      document.getElementById("grNivelSel").addEventListener("change", (e) => { nivelSeleccionado = e.target.value; cicloSeleccionado = null; pintarGrupos(); });
 
       document.getElementById("grCicloSel").addEventListener("change", (e) => {
         cicloSeleccionado = e.target.value;
@@ -568,6 +613,15 @@ function renderAlumnos(main) {
         if (error) { msg.innerHTML = errBox(error.message); return; }
         pintarGrupos();
       });
+    }
+
+    function selectorNivelHtml() {
+      return `
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
+        <select id="grNivelSel" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+          <option value="Secundaria" ${nivelSeleccionado === "Secundaria" ? "selected" : ""}>Secundaria</option>
+          <option value="Preparatoria" ${nivelSeleccionado === "Preparatoria" ? "selected" : ""}>Preparatoria</option>
+        </select>`;
     }
 
     pintarGrupos();
@@ -648,6 +702,11 @@ function renderAlumnos(main) {
           </div>
 
           <p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Inscripción</p>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
+          <select id="naNivelSel" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
+            <option value="Secundaria">Secundaria</option>
+            <option value="Preparatoria">Preparatoria</option>
+          </select>
           <div id="naGrupoSelWrap" class="mb-3"><p class="text-xs" style="color:#6C7B8A">Cargando grupos…</p></div>
 
           <div id="naMsg"></div>
@@ -657,7 +716,8 @@ function renderAlumnos(main) {
           </div>
         </div>`;
 
-      cargarGruposParaInscripcion();
+      cargarGruposParaInscripcion("Secundaria");
+      document.getElementById("naNivelSel").addEventListener("change", (e) => cargarGruposParaInscripcion(e.target.value));
 
       document.getElementById("naCancelar").addEventListener("click", () => { wrap.innerHTML = ""; });
 
@@ -707,12 +767,13 @@ function renderAlumnos(main) {
       });
     }
 
-    async function cargarGruposParaInscripcion() {
+    async function cargarGruposParaInscripcion(nivel) {
       const wrapSel = document.getElementById("naGrupoSelWrap");
-      const { data: ciclos } = await sb.from("ciclos_escolares").select("*").eq("activo", true).limit(1);
+      wrapSel.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando grupos…</p>`;
+      const { data: ciclos } = await sb.from("ciclos_escolares").select("*").eq("activo", true).eq("nivel", nivel).limit(1);
       const cicloActivo = ciclos && ciclos[0];
       if (!cicloActivo) {
-        wrapSel.innerHTML = `<p class="text-xs" style="color:#6C7B8A">No hay un ciclo escolar activo — puedes inscribirlo después desde la pestaña Grupos.</p>`;
+        wrapSel.innerHTML = `<p class="text-xs" style="color:#6C7B8A">No hay un ciclo escolar activo de ${nivel} — puedes inscribirlo después desde la pestaña Grupos.</p>`;
         return;
       }
       const { data: grupos } = await sb
