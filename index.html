@@ -76,6 +76,17 @@ function okBox(texto) {
   return `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#E6F0EA; color:#3F7A5E">${texto}</div>`;
 }
 
+// Valida la estructura oficial de una CURP mexicana (18 caracteres)
+function validarCurp(curp) {
+  const regex = /^[A-Z][AEIOUX][A-Z]{2}\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[HM](AS|BC|BS|CC|CS|CH|CL|CM|DF|DG|GT|GR|HG|JC|MC|MN|MS|NT|NL|OC|PL|QO|QR|SP|SL|SR|TC|TS|TL|VZ|YN|ZS|NE)[B-DF-HJ-NP-TV-Z]{3}[A-Z0-9]\d$/;
+  return regex.test(curp);
+}
+
+// Valida un formato de correo electrónico razonable
+function validarCorreo(correo) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo);
+}
+
 // ============================================================
 // Arranque: revisa si ya hay sesión activa de Supabase Auth
 // ============================================================
@@ -707,7 +718,7 @@ function renderAlumnos(main) {
           </div>
 
           <div class="grid grid-cols-3 gap-2 mb-3">
-            <input id="naCurp" placeholder="CURP (opcional)" value="${alumnoExistente?.curp || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naCurp" placeholder="CURP (18 caracteres, opcional)" maxlength="18" value="${alumnoExistente?.curp || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
             <input id="naFechaNac" type="date" value="${alumnoExistente?.fecha_nacimiento || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
             <select id="naSexo" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
               <option value="">Sexo</option>
@@ -745,6 +756,16 @@ function renderAlumnos(main) {
       cargarGruposParaInscripcion(nivelInicial, inscripcionExistente?.grupo_id);
       document.getElementById("naNivelSel").addEventListener("change", (e) => cargarGruposParaInscripcion(e.target.value));
 
+      // Candados de formato: nombres y CURP siempre en mayúsculas mientras se escriben
+      ["naNombres", "naApPat", "naApMat", "naCurp", "naTutorNombre"].forEach(id => {
+        const el = document.getElementById(id);
+        el.addEventListener("input", () => {
+          const cursor = el.selectionStart;
+          el.value = el.value.toUpperCase();
+          el.setSelectionRange(cursor, cursor);
+        });
+      });
+
       document.getElementById("naCancelar").addEventListener("click", () => { wrap.innerHTML = ""; });
 
       document.getElementById("naGuardar").addEventListener("click", async () => {
@@ -753,6 +774,18 @@ function renderAlumnos(main) {
         const nombres = document.getElementById("naNombres").value.trim();
         const apPat = document.getElementById("naApPat").value.trim();
         if (!nombres || !apPat) { msg.innerHTML = errBox("Nombre(s) y apellido paterno son obligatorios."); return; }
+
+        const curp = document.getElementById("naCurp").value.trim();
+        if (curp && !validarCurp(curp)) {
+          msg.innerHTML = errBox("El CURP no tiene un formato válido (deben ser 18 caracteres con la estructura oficial: ej. ABCD123456HDFXYZ01).");
+          return;
+        }
+
+        const correoTutor = document.getElementById("naTutorCorreo").value.trim();
+        if (correoTutor && !validarCorreo(correoTutor)) {
+          msg.innerHTML = errBox("El correo del tutor no tiene un formato válido.");
+          return;
+        }
 
         const datosAlumno = {
           nombres,
