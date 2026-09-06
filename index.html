@@ -25,8 +25,8 @@
   }
   @media print {
     body * { visibility: hidden; }
-    #ibGafeteImprimible, #ibGafeteImprimible * { visibility: visible; }
-    #ibGafeteImprimible { position: absolute; top: 0; left: 0; }
+    .ib-imprimible, .ib-imprimible * { visibility: visible; }
+    .ib-imprimible { position: absolute; top: 0; left: 0; }
   }
 </style>
 </head>
@@ -52,6 +52,7 @@ const MENU = [
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: false },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
+  { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: false },
   { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
   { id: "avisos", label: "Disciplina y Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
@@ -211,6 +212,7 @@ function renderSeccion() {
   if (state.seccion === "alumnos") return renderAlumnos(main);
   if (state.seccion === "accesos") return renderAccesos(main);
   if (state.seccion === "catedraticos") return renderCatedraticos(main);
+  if (state.seccion === "privacidad") return renderAvisoPrivacidad(main);
 
   const modulo = MENU.find(m => m.id === state.seccion);
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
@@ -663,61 +665,84 @@ function renderAlumnos(main) {
 
       lista.innerHTML = (!data || data.length === 0)
         ? `<p class="text-sm mt-3" style="color:#6C7B8A">Sin resultados.</p>`
-        : `<div class="mt-3 space-y-2">${data.map(a => `
-            <div class="p-3 rounded-xl bg-white border" style="border-color:#E1DED5; ${!a.activo ? "opacity:0.5" : ""}">
+        : `<div class="mt-3 space-y-2">${data.map((a, i) => `
+            <button class="alEditarBtn w-full text-left p-3 rounded-xl bg-white border" data-idx="${i}" style="border-color:#E1DED5; ${!a.activo ? "opacity:0.5" : ""}">
               <p class="text-sm font-semibold" style="color:#1E3A8A">${a.nombres} ${a.apellido_paterno} ${a.apellido_materno || ""} <span class="text-xs font-normal" style="color:#6C7B8A">(${a.matricula})</span></p>
-              <p class="text-xs" style="color:#6C7B8A">${a.curp || "Sin CURP"} · Ingreso: ${a.fecha_ingreso}</p>
-            </div>`).join("")}</div>`;
+              <p class="text-xs" style="color:#6C7B8A">${a.curp || "Sin CURP"} · Ingreso: ${a.fecha_ingreso}${!a.activo ? " · INACTIVO" : ""}</p>
+            </button>`).join("")}</div>`;
+
+      lista.querySelectorAll(".alEditarBtn").forEach(b => b.addEventListener("click", () => mostrarFormularioAlumno(data[Number(b.dataset.idx)])));
     }
 
-    function mostrarFormularioAlumno() {
+    async function mostrarFormularioAlumno(alumnoExistente) {
       const wrap = document.getElementById("alFormWrap");
+      const esEdicion = !!alumnoExistente;
+      wrap.innerHTML = `<p class="text-xs mt-2" style="color:#6C7B8A">Cargando…</p>`;
+
+      let tutorExistente = null;
+      let inscripcionExistente = null;
+
+      if (esEdicion) {
+        const [tutorRes, inscRes] = await Promise.all([
+          sb.from("alumno_tutores").select("tutor_id, tutores(*)").eq("alumno_id", alumnoExistente.id).order("es_contacto_principal", { ascending: false }).limit(1).maybeSingle(),
+          sb.from("inscripciones").select("*, grupos(letra, grado_id, grados(nivel))").eq("alumno_id", alumnoExistente.id).order("fecha_inscripcion", { ascending: false }).limit(1).maybeSingle(),
+        ]);
+        tutorExistente = tutorRes.data?.tutores || null;
+        inscripcionExistente = inscRes.data || null;
+      }
+
+      const nivelInicial = inscripcionExistente?.grupos?.grados?.nivel || "Secundaria";
+
       wrap.innerHTML = `
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-          <p class="text-sm font-semibold mb-3" style="color:#1E3A8A">Nuevo alumno</p>
-
-          <div class="grid grid-cols-3 gap-2 mb-3">
-            <input id="naNombres" placeholder="Nombre(s)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naApPat" placeholder="Apellido paterno" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naApMat" placeholder="Apellido materno" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-sm font-semibold" style="color:#1E3A8A">${esEdicion ? "Editar alumno: " + alumnoExistente.matricula : "Nuevo alumno"}</p>
+            ${esEdicion ? `<label class="flex items-center gap-1 text-xs" style="color:#1E3A8A"><input type="checkbox" id="naActivo" ${alumnoExistente.activo ? "checked" : ""} /> Activo</label>` : ""}
           </div>
 
           <div class="grid grid-cols-3 gap-2 mb-3">
-            <input id="naCurp" placeholder="CURP (opcional)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naFechaNac" type="date" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naNombres" placeholder="Nombre(s)" value="${alumnoExistente?.nombres || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naApPat" placeholder="Apellido paterno" value="${alumnoExistente?.apellido_paterno || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naApMat" placeholder="Apellido materno" value="${alumnoExistente?.apellido_materno || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          </div>
+
+          <div class="grid grid-cols-3 gap-2 mb-3">
+            <input id="naCurp" placeholder="CURP (opcional)" value="${alumnoExistente?.curp || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naFechaNac" type="date" value="${alumnoExistente?.fecha_nacimiento || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
             <select id="naSexo" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
               <option value="">Sexo</option>
-              <option value="Femenino">Femenino</option>
-              <option value="Masculino">Masculino</option>
+              <option value="Femenino" ${alumnoExistente?.sexo === "Femenino" ? "selected" : ""}>Femenino</option>
+              <option value="Masculino" ${alumnoExistente?.sexo === "Masculino" ? "selected" : ""}>Masculino</option>
             </select>
           </div>
 
           <p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Tutor / padre de familia</p>
           <div class="grid grid-cols-2 gap-2 mb-2">
-            <input id="naTutorNombre" placeholder="Nombre completo del tutor" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naTutorParentesco" placeholder="Parentesco (Madre, Padre…)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorNombre" placeholder="Nombre completo del tutor" value="${tutorExistente?.nombre_completo || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorParentesco" placeholder="Parentesco (Madre, Padre…)" value="${tutorExistente?.parentesco || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
           </div>
           <div class="grid grid-cols-2 gap-2 mb-3">
-            <input id="naTutorTelefono" placeholder="Teléfono" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naTutorCorreo" placeholder="Correo (opcional)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorTelefono" placeholder="Teléfono" value="${tutorExistente?.telefono || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorCorreo" placeholder="Correo (opcional)" value="${tutorExistente?.correo || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
           </div>
 
           <p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Inscripción</p>
           <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
           <select id="naNivelSel" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
-            <option value="Secundaria">Secundaria</option>
-            <option value="Preparatoria">Preparatoria</option>
+            <option value="Secundaria" ${nivelInicial === "Secundaria" ? "selected" : ""}>Secundaria</option>
+            <option value="Preparatoria" ${nivelInicial === "Preparatoria" ? "selected" : ""}>Preparatoria</option>
           </select>
           <div id="naGrupoSelWrap" class="mb-3"><p class="text-xs" style="color:#6C7B8A">Cargando grupos…</p></div>
+          ${esEdicion && inscripcionExistente ? `<p class="text-xs mb-3" style="color:#6C7B8A">Inscripción actual: ${inscripcionExistente.grupos.grados.nombre || ""} "${inscripcionExistente.grupos.letra}" — si cambias el grupo arriba, se actualizará esta inscripción.</p>` : ""}
 
           <div id="naMsg"></div>
           <div class="flex gap-2">
             <button id="naCancelar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
-            <button id="naGuardar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar alumno</button>
+            <button id="naGuardar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">${esEdicion ? "Guardar cambios" : "Guardar alumno"}</button>
           </div>
         </div>`;
 
-      cargarGruposParaInscripcion("Secundaria");
+      cargarGruposParaInscripcion(nivelInicial, inscripcionExistente?.grupo_id);
       document.getElementById("naNivelSel").addEventListener("change", (e) => cargarGruposParaInscripcion(e.target.value));
 
       document.getElementById("naCancelar").addEventListener("click", () => { wrap.innerHTML = ""; });
@@ -729,38 +754,54 @@ function renderAlumnos(main) {
         const apPat = document.getElementById("naApPat").value.trim();
         if (!nombres || !apPat) { msg.innerHTML = errBox("Nombre(s) y apellido paterno son obligatorios."); return; }
 
-        const { data: alumnoData, error: alumnoError } = await sb.from("alumnos").insert({
+        const datosAlumno = {
           nombres,
           apellido_paterno: apPat,
           apellido_materno: document.getElementById("naApMat").value.trim() || null,
           curp: document.getElementById("naCurp").value.trim() || null,
           fecha_nacimiento: document.getElementById("naFechaNac").value || null,
           sexo: document.getElementById("naSexo").value || null,
-        }).select().single();
+        };
 
-        if (alumnoError) { msg.innerHTML = errBox(alumnoError.message); return; }
+        let alumnoId;
+        if (esEdicion) {
+          datosAlumno.activo = document.getElementById("naActivo").checked;
+          const { error: errUpd } = await sb.from("alumnos").update(datosAlumno).eq("id", alumnoExistente.id);
+          if (errUpd) { msg.innerHTML = errBox(errUpd.message); return; }
+          alumnoId = alumnoExistente.id;
+        } else {
+          const { data: alumnoData, error: alumnoError } = await sb.from("alumnos").insert(datosAlumno).select().single();
+          if (alumnoError) { msg.innerHTML = errBox(alumnoError.message); return; }
+          alumnoId = alumnoData.id;
+        }
 
         const tutorNombre = document.getElementById("naTutorNombre").value.trim();
         if (tutorNombre) {
-          const { data: tutorData, error: tutorError } = await sb.from("tutores").insert({
+          const datosTutor = {
             nombre_completo: tutorNombre,
             parentesco: document.getElementById("naTutorParentesco").value.trim() || null,
             telefono: document.getElementById("naTutorTelefono").value.trim() || null,
             correo: document.getElementById("naTutorCorreo").value.trim() || null,
-          }).select().single();
-
-          if (!tutorError && tutorData) {
-            await sb.from("alumno_tutores").insert({ alumno_id: alumnoData.id, tutor_id: tutorData.id, es_contacto_principal: true });
+          };
+          if (esEdicion && tutorExistente) {
+            await sb.from("tutores").update(datosTutor).eq("id", tutorExistente.id);
+          } else {
+            const { data: tutorData, error: tutorError } = await sb.from("tutores").insert(datosTutor).select().single();
+            if (!tutorError && tutorData) {
+              await sb.from("alumno_tutores").insert({ alumno_id: alumnoId, tutor_id: tutorData.id, es_contacto_principal: true });
+            }
           }
         }
 
         const grupoSel = document.getElementById("naGrupoSel");
         if (grupoSel && grupoSel.value) {
-          await sb.from("inscripciones").insert({
-            alumno_id: alumnoData.id,
-            ciclo_escolar_id: grupoSel.dataset.ciclo,
-            grupo_id: grupoSel.value,
-          });
+          const cicloId = grupoSel.dataset.ciclo;
+          const { data: existeInsc } = await sb.from("inscripciones").select("id").eq("alumno_id", alumnoId).eq("ciclo_escolar_id", cicloId).maybeSingle();
+          if (existeInsc) {
+            await sb.from("inscripciones").update({ grupo_id: grupoSel.value }).eq("id", existeInsc.id);
+          } else {
+            await sb.from("inscripciones").insert({ alumno_id: alumnoId, ciclo_escolar_id: cicloId, grupo_id: grupoSel.value });
+          }
         }
 
         wrap.innerHTML = "";
@@ -768,7 +809,7 @@ function renderAlumnos(main) {
       });
     }
 
-    async function cargarGruposParaInscripcion(nivel) {
+    async function cargarGruposParaInscripcion(nivel, grupoIdPreseleccionar) {
       const wrapSel = document.getElementById("naGrupoSelWrap");
       wrapSel.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando grupos…</p>`;
       const { data: ciclos } = await sb.from("ciclos_escolares").select("*").eq("activo", true).eq("nivel", nivel).limit(1);
@@ -786,7 +827,7 @@ function renderAlumnos(main) {
       wrapSel.innerHTML = `
         <select id="naGrupoSel" data-ciclo="${cicloActivo.id}" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
           <option value="">Sin asignar por ahora</option>
-          ${(grupos || []).map(g => `<option value="${g.id}">${g.grados.nombre} "${g.letra}"</option>`).join("")}
+          ${(grupos || []).map(g => `<option value="${g.id}" ${g.id === grupoIdPreseleccionar ? "selected" : ""}>${g.grados.nombre} "${g.letra}"</option>`).join("")}
         </select>`;
     }
   }
@@ -1001,7 +1042,7 @@ function renderAccesos(main) {
       wrap.innerHTML = `<p class="text-xs mt-3" style="color:#6C7B8A">Generando gafete…</p>`;
 
       wrap.innerHTML = `
-        <div id="ibGafeteImprimible" class="mt-4 mx-auto p-4 rounded-xl bg-white border text-center" style="border-color:#E1DED5; width:280px">
+        <div id="ibGafeteImprimible" class="ib-imprimible mt-4 mx-auto p-4 rounded-xl bg-white border text-center" style="border-color:#E1DED5; width:280px">
           <div class="ib-brand text-sm font-semibold" style="color:#1E3A8A">Instituto Juan Bosco</div>
           <div class="text-[10px] mb-2" style="color:#6C7B8A">${persona.tipo === "alumno" ? "Credencial de Alumno" : "Credencial de Personal"}</div>
           <canvas id="gfQrCanvas" class="mx-auto"></canvas>
@@ -1299,6 +1340,99 @@ function renderCatedraticos(main) {
 
     pintar();
   }
+}
+
+// ============================================================
+// Módulo Aviso de Privacidad
+// ============================================================
+async function renderAvisoPrivacidad(main) {
+  const esAdmin = state.perfil.rol === "Administrador";
+  main.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+
+  const { data: datos, error } = await sb.from("datos_institucion").select("*").eq("id", 1).single();
+  if (error) { main.innerHTML = errBox(error.message); return; }
+
+  function val(campo, textoVacio) {
+    return datos[campo] && datos[campo].trim() ? datos[campo] : `<span style="color:#B5453A">[${textoVacio}]</span>`;
+  }
+
+  function pintar() {
+    main.innerHTML = `
+      <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Aviso de Privacidad</h2>
+      <div class="max-w-2xl">
+        ${esAdmin ? `
+        <div class="p-4 rounded-xl bg-white border mb-4" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Datos del instituto (se usan en el aviso y en futuros documentos)</p>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <textarea id="diNombre" rows="2" placeholder="Nombre / razón social oficial (puedes usar 2 líneas)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">${datos.nombre_oficial || ""}</textarea>
+            <input id="diRfc" placeholder="RFC (opcional)" value="${datos.rfc || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          </div>
+          <input id="diDomicilio" placeholder="Domicilio completo" value="${datos.domicilio || ""}" class="w-full px-2 py-1.5 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          <div class="grid grid-cols-3 gap-2 mb-2">
+            <input id="diCiudad" placeholder="Ciudad" value="${datos.ciudad || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="diTelefono" placeholder="Teléfono" value="${datos.telefono || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="diCorreo" placeholder="Correo de contacto" value="${datos.correo || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          </div>
+          <div id="diMsg"></div>
+          <button id="diGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar datos</button>
+        </div>` : ""}
+
+        <div id="ibAvisoImprimible" class="ib-imprimible p-6 rounded-xl bg-white border" style="border-color:#E1DED5">
+          <div class="text-center mb-4">
+            <div class="ib-brand text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${val("nombre_oficial", "Nombre oficial del instituto pendiente")}</div>
+            <div class="text-xs" style="color:#6C7B8A">${val("domicilio", "Domicilio pendiente")}${datos.ciudad ? ", " + datos.ciudad : ""}</div>
+          </div>
+
+          <h3 class="text-sm font-bold text-center mb-3" style="color:#1E3A8A">AVISO DE PRIVACIDAD</h3>
+
+          <div class="text-xs space-y-3" style="color:#1E3A8A">
+            <p>${val("nombre_oficial", "Nombre oficial del instituto pendiente")} (en adelante "el Instituto"), con domicilio en ${val("domicilio", "domicilio pendiente")}, es responsable del tratamiento de los datos personales que se recaben de sus alumnos, así como de los padres, madres o tutores legales que los representan, de conformidad con lo dispuesto por la Ley Federal de Protección de Datos Personales en Posesión de los Particulares y su Reglamento.</p>
+
+            <p><strong>Datos personales que se recaban.</strong> Datos de identificación del alumno (nombre, CURP, fecha de nacimiento, sexo, matrícula), datos de contacto de los padres, madres o tutores (nombre, parentesco, teléfono, correo electrónico, domicilio), información académica (calificaciones, asistencia, grupo y nivel escolar), información relacionada con el pago de colegiaturas y demás cuotas escolares cuando aplique, así como el código de identificación (QR) utilizado para la elaboración de credenciales y el control de acceso a las instalaciones.</p>
+
+            <p>Dado que la mayoría de los alumnos son menores de edad, sus datos personales son proporcionados y su tratamiento consentido por sus padres, madres o tutores legales.</p>
+
+            <p><strong>Finalidades del tratamiento.</strong> Los datos se utilizan para: la inscripción y control administrativo y escolar del alumno; la evaluación académica; la comunicación con padres, madres o tutores; el control de asistencia y acceso a las instalaciones; la elaboración de credenciales de identificación; la expedición de constancias, certificados y demás documentos oficiales; y, cuando aplique, el cobro de colegiaturas y demás cuotas escolares.</p>
+
+            <p>De manera adicional, los datos de contacto podrán utilizarse para el envío de comunicados, avisos y circulares relacionados con la vida escolar del alumno. Si usted no desea que sus datos se utilicen para esta finalidad secundaria, puede manifestarlo a través de los medios de contacto señalados en este aviso.</p>
+
+            <p><strong>Transferencia de datos.</strong> El Instituto no transferirá sus datos personales a terceros no relacionados con las finalidades aquí descritas, salvo que exista una obligación legal o así lo requiera una autoridad educativa competente.</p>
+
+            <p><strong>Derechos ARCO.</strong> Usted tiene derecho a Acceder, Rectificar, Cancelar u Oponerse al tratamiento de sus datos personales (derechos ARCO), así como a revocar el consentimiento otorgado. Para ejercerlos, puede comunicarse al correo ${val("correo", "correo pendiente")} o al teléfono ${val("telefono", "teléfono pendiente")}.</p>
+
+            <p><strong>Cambios al aviso de privacidad.</strong> El presente aviso de privacidad puede sufrir modificaciones. Cualquier cambio será comunicado oportunamente a través de los medios de contacto que el Instituto tenga registrados.</p>
+
+            <p><strong>Consentimiento.</strong> Al momento de realizar el trámite de inscripción, el padre, madre o tutor legal manifiesta haber leído y aceptado el contenido del presente aviso de privacidad.</p>
+
+            <p class="text-right mt-4">${val("ciudad", "ciudad pendiente")}, a ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
+          </div>
+        </div>
+
+        <button id="avImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>
+      </div>`;
+
+    document.getElementById("avImprimirBtn").addEventListener("click", () => window.print());
+
+    if (esAdmin) {
+      document.getElementById("diGuardar").addEventListener("click", async () => {
+        const msg = document.getElementById("diMsg");
+        msg.innerHTML = "";
+        const { error: errUpd } = await sb.from("datos_institucion").update({
+          nombre_oficial: document.getElementById("diNombre").value.trim() || null,
+          rfc: document.getElementById("diRfc").value.trim() || null,
+          domicilio: document.getElementById("diDomicilio").value.trim() || null,
+          ciudad: document.getElementById("diCiudad").value.trim() || null,
+          telefono: document.getElementById("diTelefono").value.trim() || null,
+          correo: document.getElementById("diCorreo").value.trim() || null,
+          actualizado_en: new Date().toISOString(),
+        }).eq("id", 1);
+        if (errUpd) { msg.innerHTML = errBox(errUpd.message); return; }
+        renderAvisoPrivacidad(main);
+      });
+    }
+  }
+
+  pintar();
 }
 
 init();
