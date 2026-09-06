@@ -1170,6 +1170,8 @@ function renderCatedraticos(main) {
         <div class="p-4 rounded-xl bg-white border mt-3" style="border-color:#E1DED5">
           <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nombre completo</label>
           <input id="prfNombre" value="${perfil.nombre_completo}" ${esAdmin ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">CURP (opcional)</label>
+          <input id="prfCurp" value="${perfil.curp || ""}" maxlength="18" placeholder="CURP (18 caracteres)" ${esAdmin ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
           <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Rol</label>
           <select id="prfRol" ${esAdmin ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
             ${["Administrador", "Director", "Secretaria", "Profesor"].map(r => `<option value="${r}" ${perfil.rol === r ? "selected" : ""}>${r}</option>`).join("")}
@@ -1182,10 +1184,28 @@ function renderCatedraticos(main) {
         </div>`;
 
       if (esAdmin) {
+        ["prfNombre", "prfCurp"].forEach(id => {
+          const el = document.getElementById(id);
+          el.addEventListener("input", () => {
+            const cursor = el.selectionStart;
+            el.value = el.value.toUpperCase();
+            el.setSelectionRange(cursor, cursor);
+          });
+        });
+
         document.getElementById("prfGuardar").addEventListener("click", async () => {
           const msg = document.getElementById("prfMsg");
+          msg.innerHTML = "";
+
+          const curp = document.getElementById("prfCurp").value.trim();
+          if (curp && !validarCurp(curp)) {
+            msg.innerHTML = errBox("El CURP no tiene un formato válido (18 caracteres con la estructura oficial).");
+            return;
+          }
+
           const { error } = await sb.from("perfiles").update({
             nombre_completo: document.getElementById("prfNombre").value.trim(),
+            curp: curp || null,
             rol: document.getElementById("prfRol").value,
             activo: document.getElementById("prfActivo").checked,
           }).eq("id", perfil.id);
