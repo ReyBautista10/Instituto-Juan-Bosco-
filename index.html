@@ -50,7 +50,7 @@ const MENU = [
   { id: "inicio", label: "Inicio", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
-  { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: false },
+  { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: false },
@@ -101,6 +101,10 @@ async function init() {
 
   sb.auth.onAuthStateChange((_event, session) => {
     state.sesion = session;
+    if (_event === "PASSWORD_RECOVERY") {
+      renderRestablecerPassword();
+      return;
+    }
     if (!session) {
       state.perfil = null;
       renderLogin();
@@ -146,7 +150,8 @@ function renderLogin(mensajeExtra) {
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Correo</label>
         <input id="loginCorreo" type="email" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Contraseña</label>
-        <input id="loginPassword" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5" />
+        <input id="loginPassword" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+        <button id="olvideBtn" type="button" class="text-xs mb-3 underline" style="color:#1E3A8A">¿Olvidaste tu contraseña?</button>
         <div id="loginMsg"></div>
         <button id="loginBtn" class="w-full py-2.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#F4F1EB">Entrar</button>
       </div>
@@ -154,6 +159,70 @@ function renderLogin(mensajeExtra) {
 
   document.getElementById("loginPassword").addEventListener("keydown", e => { if (e.key === "Enter") iniciarSesion(); });
   document.getElementById("loginBtn").addEventListener("click", iniciarSesion);
+  document.getElementById("olvideBtn").addEventListener("click", renderOlvidePassword);
+}
+
+function renderOlvidePassword() {
+  app.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center p-5">
+      <div class="w-full max-w-sm p-6 rounded-2xl bg-white border" style="border-color:#E1DED5">
+        <div class="text-center mb-6">
+          <div class="ib-brand text-lg font-semibold" style="color:#1E3A8A">Recuperar contraseña</div>
+          <div class="text-xs mt-1" style="color:#6C7B8A">Te enviaremos un link a tu correo para crear una nueva contraseña.</div>
+        </div>
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Correo</label>
+        <input id="olvideCorreo" type="email" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+        <div id="olvideMsg"></div>
+        <button id="olvideEnviarBtn" class="w-full py-2.5 rounded-lg text-sm font-bold mb-2" style="background:#1E3A8A; color:#F4F1EB">Enviar link de recuperación</button>
+        <button id="olvideVolverBtn" type="button" class="w-full py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Volver al inicio de sesión</button>
+      </div>
+    </div>`;
+
+  document.getElementById("olvideVolverBtn").addEventListener("click", () => renderLogin());
+
+  document.getElementById("olvideEnviarBtn").addEventListener("click", async () => {
+    const correo = document.getElementById("olvideCorreo").value.trim();
+    const msg = document.getElementById("olvideMsg");
+    msg.innerHTML = "";
+    if (!correo) { msg.innerHTML = errBox("Escribe tu correo."); return; }
+    const { error } = await sb.auth.resetPasswordForEmail(correo, {
+      redirectTo: window.location.origin + window.location.pathname,
+    });
+    if (error) { msg.innerHTML = errBox(error.message); return; }
+    msg.innerHTML = okBox("Si ese correo está registrado, te llegará un link para restablecer tu contraseña. Revisa también spam.");
+  });
+}
+
+function renderRestablecerPassword() {
+  app.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center p-5">
+      <div class="w-full max-w-sm p-6 rounded-2xl bg-white border" style="border-color:#E1DED5">
+        <div class="text-center mb-6">
+          <div class="ib-brand text-lg font-semibold" style="color:#1E3A8A">Crear nueva contraseña</div>
+        </div>
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nueva contraseña</label>
+        <input id="restNueva" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Confirmar contraseña</label>
+        <input id="restConfirmar" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5" />
+        <div id="restMsg"></div>
+        <button id="restGuardarBtn" class="w-full py-2.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#F4F1EB">Guardar nueva contraseña</button>
+      </div>
+    </div>`;
+
+  document.getElementById("restGuardarBtn").addEventListener("click", async () => {
+    const nueva = document.getElementById("restNueva").value;
+    const confirmar = document.getElementById("restConfirmar").value;
+    const msg = document.getElementById("restMsg");
+    msg.innerHTML = "";
+    if (!nueva || nueva.length < 6) { msg.innerHTML = errBox("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (nueva !== confirmar) { msg.innerHTML = errBox("Las contraseñas no coinciden."); return; }
+
+    const { error } = await sb.auth.updateUser({ password: nueva });
+    if (error) { msg.innerHTML = errBox(error.message); return; }
+
+    msg.innerHTML = okBox("Contraseña actualizada. Entrando…");
+    setTimeout(async () => { await cargarPerfil(); }, 1200);
+  });
 }
 
 async function iniciarSesion() {
@@ -193,7 +262,10 @@ function renderApp() {
             <div class="text-xs" style="color:#9BA9B8">${state.perfil.nombre_completo} · ${state.perfil.rol}</div>
           </div>
         </div>
-        <button id="logoutBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#B5453A; color:#fff">Cerrar sesión</button>
+        <div class="flex items-center gap-2">
+          <button id="cambiarPassBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cambiar contraseña</button>
+          <button id="logoutBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#B5453A; color:#fff">Cerrar sesión</button>
+        </div>
       </div>
 
       <div class="flex flex-wrap gap-1 px-4 py-2" style="background:#fff; border-bottom:1px solid #E1DED5">
@@ -208,12 +280,49 @@ function renderApp() {
     </div>`;
 
   document.getElementById("logoutBtn").addEventListener("click", cerrarSesion);
+  document.getElementById("cambiarPassBtn").addEventListener("click", abrirModalCambiarPassword);
   document.querySelectorAll(".menuBtn").forEach(b => b.addEventListener("click", () => {
     state.seccion = b.dataset.id;
     renderApp();
   }));
 
   renderSeccion();
+}
+
+function abrirModalCambiarPassword() {
+  const modal = document.createElement("div");
+  modal.className = "fixed inset-0 z-50 flex items-center justify-center p-4";
+  modal.style.background = "rgba(28,43,58,0.6)";
+  modal.innerHTML = `
+    <div class="rounded-2xl p-5 bg-white w-full max-w-sm">
+      <p class="text-sm font-semibold mb-3" style="color:#1E3A8A">Cambiar mi contraseña</p>
+      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nueva contraseña</label>
+      <input id="cpNueva" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Confirmar contraseña</label>
+      <input id="cpConfirmar" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+      <div id="cpMsg"></div>
+      <div class="flex gap-2">
+        <button id="cpCancelar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
+        <button id="cpGuardar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  document.getElementById("cpCancelar").addEventListener("click", () => modal.remove());
+
+  document.getElementById("cpGuardar").addEventListener("click", async () => {
+    const nueva = document.getElementById("cpNueva").value;
+    const confirmar = document.getElementById("cpConfirmar").value;
+    const msg = document.getElementById("cpMsg");
+    msg.innerHTML = "";
+    if (!nueva || nueva.length < 6) { msg.innerHTML = errBox("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (nueva !== confirmar) { msg.innerHTML = errBox("Las contraseñas no coinciden."); return; }
+
+    const { error } = await sb.auth.updateUser({ password: nueva });
+    if (error) { msg.innerHTML = errBox(error.message); return; }
+    msg.innerHTML = okBox("Contraseña actualizada correctamente.");
+    setTimeout(() => modal.remove(), 1500);
+  });
 }
 
 function renderSeccion() {
@@ -224,6 +333,7 @@ function renderSeccion() {
   if (state.seccion === "accesos") return renderAccesos(main);
   if (state.seccion === "catedraticos") return renderCatedraticos(main);
   if (state.seccion === "privacidad") return renderAvisoPrivacidad(main);
+  if (state.seccion === "calificaciones") return renderCalificaciones(main);
 
   const modulo = MENU.find(m => m.id === state.seccion);
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
@@ -1486,6 +1596,191 @@ async function renderAvisoPrivacidad(main) {
   }
 
   pintar();
+}
+
+// ============================================================
+// Módulo Calificaciones y Evaluación
+// ============================================================
+function renderCalificaciones(main) {
+  const esAdmin = state.perfil.rol === "Administrador";
+  const esProfesor = state.perfil.rol === "Profesor";
+
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Calificaciones y Evaluación</h2>
+    <div class="max-w-3xl">
+      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Selecciona clase</label>
+      <select id="calAsigSel" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5">
+        <option value="">Cargando…</option>
+      </select>
+      <div id="calContenido"></div>
+    </div>`;
+
+  cargarAsignaciones();
+
+  async function cargarAsignaciones() {
+    let query = sb.from("profesor_materias_grupos").select("id, profesor_id, grupo_id, ciclo_escolar_id, materias(nombre), grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre), perfiles(nombre_completo)");
+    if (esProfesor) query = query.eq("profesor_id", state.perfil.id);
+    const { data, error } = await query;
+    const sel = document.getElementById("calAsigSel");
+    if (error) { sel.innerHTML = `<option>Error al cargar</option>`; return; }
+    const asignaciones = data || [];
+    if (asignaciones.length === 0) {
+      sel.innerHTML = `<option value="">Sin clases asignadas</option>`;
+      return;
+    }
+    sel.innerHTML = `<option value="">Selecciona…</option>` + asignaciones.map(a => `
+      <option value="${a.id}">${a.materias.nombre} — ${a.grupos.grados.nombre} "${a.grupos.letra}" (${a.grupos.grados.nivel}) — ${a.ciclos_escolares.nombre}${esAdmin ? " — " + a.perfiles.nombre_completo : ""}</option>
+    `).join("");
+    sel.addEventListener("change", () => {
+      const asignacion = asignaciones.find(a => a.id === sel.value);
+      if (asignacion) cargarClase(asignacion); else document.getElementById("calContenido").innerHTML = "";
+    });
+  }
+
+  async function cargarClase(asignacion) {
+    const cont = document.getElementById("calContenido");
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+
+    const puedeEditar = esAdmin || (esProfesor && asignacion.profesor_id === state.perfil.id);
+
+    const [criteriosRes, alumnosRes] = await Promise.all([
+      sb.from("criterios_evaluacion").select("*").eq("asignacion_id", asignacion.id).order("periodo").order("orden"),
+      sb.from("inscripciones").select("alumno_id, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula)").eq("grupo_id", asignacion.grupo_id).eq("ciclo_escolar_id", asignacion.ciclo_escolar_id).eq("estado", "Inscrito"),
+    ]);
+
+    if (criteriosRes.error) { cont.innerHTML = errBox(criteriosRes.error.message); return; }
+    const criterios = criteriosRes.data || [];
+    const alumnos = (alumnosRes.data || []).map(i => i.alumnos).filter(Boolean).sort((a, b) => a.apellido_paterno.localeCompare(b.apellido_paterno));
+
+    const idsCriterios = criterios.map(c => c.id);
+    const valoresCache = {};
+    if (idsCriterios.length > 0) {
+      const { data: calsExistentes } = await sb.from("calificaciones").select("alumno_id, criterio_id, valor").in("criterio_id", idsCriterios);
+      (calsExistentes || []).forEach(c => {
+        valoresCache[c.alumno_id] = valoresCache[c.alumno_id] || {};
+        valoresCache[c.alumno_id][c.criterio_id] = Number(c.valor);
+      });
+    }
+
+    function obtenerValor(alumnoId, criterioId) {
+      return valoresCache[alumnoId]?.[criterioId] ?? null;
+    }
+    function calcularFinal(alumnoId, criteriosPeriodo) {
+      let total = 0;
+      criteriosPeriodo.forEach(c => {
+        const v = valoresCache[alumnoId]?.[c.id];
+        if (v != null) total += v * (Number(c.ponderacion) / 100);
+      });
+      return total;
+    }
+
+    const periodos = [...new Set(criterios.map(c => c.periodo))];
+    let periodoActivo = periodos[0] || null;
+
+    function pintar() {
+      const criteriosPeriodo = criterios.filter(c => c.periodo === periodoActivo);
+      const sumaPonderacion = criteriosPeriodo.reduce((s, c) => s + Number(c.ponderacion), 0);
+
+      cont.innerHTML = `
+        <div class="flex gap-1 mb-3 flex-wrap">
+          ${periodos.map(p => `<button class="calPeriodoBtn px-3 py-1.5 rounded-lg text-xs font-semibold" data-p="${p}" style="background:${p === periodoActivo ? "#1E3A8A" : "#F4F1EB"}; color:${p === periodoActivo ? "#fff" : "#1E3A8A"}">${p}</button>`).join("")}
+          ${puedeEditar ? `<button id="calNuevoPeriodoBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">+ Periodo</button>` : ""}
+        </div>
+
+        ${periodoActivo ? `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <div class="flex items-center justify-between mb-2">
+            <p class="text-sm font-semibold" style="color:#1E3A8A">Criterios de ${periodoActivo}</p>
+            <span class="text-xs font-semibold" style="color:${sumaPonderacion === 100 ? "#3F7A5E" : "#B5453A"}">Suma: ${sumaPonderacion}%</span>
+          </div>
+          ${criteriosPeriodo.map(c => `<div class="flex justify-between text-sm py-1" style="color:#1C2B3A"><span>${c.nombre}</span><span>${c.ponderacion}%</span></div>`).join("") || `<p class="text-xs" style="color:#6C7B8A">Sin criterios aún.</p>`}
+          ${puedeEditar ? `
+          <div class="flex gap-2 mt-2">
+            <input id="calCriterioNombre" placeholder="Nombre (ej. Examen)" class="flex-1 px-2 py-1.5 rounded-lg text-xs outline-none border" style="border-color:#E1DED5" />
+            <input id="calCriterioPond" type="number" min="1" max="100" placeholder="%" class="w-16 px-2 py-1.5 rounded-lg text-xs outline-none border" style="border-color:#E1DED5" />
+            <button id="calAgregarCriterioBtn" class="px-2 py-1.5 rounded-lg text-xs font-semibold" style="background:#1E3A8A; color:#fff">+</button>
+          </div>
+          <div id="calCriterioMsg" class="mt-1"></div>` : ""}
+        </div>
+
+        ${criteriosPeriodo.length > 0 && alumnos.length > 0 ? `
+        <div class="p-4 rounded-xl bg-white border overflow-x-auto" style="border-color:#E1DED5">
+          <table class="text-sm w-full">
+            <thead>
+              <tr style="color:#6C7B8A">
+                <th class="text-left pb-2">Alumno</th>
+                ${criteriosPeriodo.map(c => `<th class="text-center pb-2 px-1">${c.nombre}<br><span class="text-xs font-normal">(${c.ponderacion}%)</span></th>`).join("")}
+                <th class="text-center pb-2">Final</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${alumnos.map(a => `
+                <tr style="color:#1C2B3A">
+                  <td class="py-1 pr-2">${a.nombres} ${a.apellido_paterno}</td>
+                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" min="0" max="10" step="0.1" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeEditar ? "" : "disabled"} /></td>`).join("")}
+                  <td class="text-center font-semibold" id="calFinal_${a.id}">${calcularFinal(a.id, criteriosPeriodo).toFixed(1)}</td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+          ${puedeEditar ? `<div id="calGuardarMsg" class="mt-2"></div><button id="calGuardarBtn" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar calificaciones</button>` : ""}
+        </div>` : criteriosPeriodo.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Agrega al menos un criterio para poder capturar calificaciones.</p>` : `<p class="text-sm" style="color:#6C7B8A">No hay alumnos inscritos en este grupo.</p>`}
+        ` : `<p class="text-sm" style="color:#6C7B8A">${puedeEditar ? 'Crea un periodo para empezar (ej. "Parcial 1").' : "Aún no hay periodos capturados para esta clase."}</p>`}
+      `;
+
+      document.querySelectorAll(".calPeriodoBtn").forEach(b => b.addEventListener("click", () => { periodoActivo = b.dataset.p; pintar(); }));
+
+      const btnNuevoPeriodo = document.getElementById("calNuevoPeriodoBtn");
+      if (btnNuevoPeriodo) btnNuevoPeriodo.addEventListener("click", () => {
+        const nombre = prompt("Nombre del nuevo periodo (ej. Parcial 1, Bimestre 2):");
+        if (nombre && nombre.trim()) {
+          periodoActivo = nombre.trim();
+          if (!periodos.includes(periodoActivo)) periodos.push(periodoActivo);
+          pintar();
+        }
+      });
+
+      if (puedeEditar && periodoActivo) {
+        const btnAgregar = document.getElementById("calAgregarCriterioBtn");
+        if (btnAgregar) btnAgregar.addEventListener("click", async () => {
+          const nombre = document.getElementById("calCriterioNombre").value.trim();
+          const pond = Number(document.getElementById("calCriterioPond").value);
+          const msg = document.getElementById("calCriterioMsg");
+          msg.innerHTML = "";
+          if (!nombre || !pond || pond <= 0 || pond > 100) { msg.innerHTML = errBox("Escribe un nombre y un porcentaje válido (1-100)."); return; }
+          const { data, error } = await sb.from("criterios_evaluacion").insert({
+            asignacion_id: asignacion.id, periodo: periodoActivo, nombre, ponderacion: pond, orden: criteriosPeriodo.length,
+          }).select().single();
+          if (error) { msg.innerHTML = errBox(error.message); return; }
+          criterios.push(data);
+          pintar();
+        });
+
+        const btnGuardar = document.getElementById("calGuardarBtn");
+        if (btnGuardar) btnGuardar.addEventListener("click", async () => {
+          const msg = document.getElementById("calGuardarMsg");
+          msg.innerHTML = "";
+          const inputs = document.querySelectorAll(".calValorInput");
+          const filas = [...inputs].filter(i => i.value !== "").map(i => ({
+            criterio_id: i.dataset.criterio, alumno_id: i.dataset.alumno, valor: Number(i.value),
+          }));
+          if (filas.length === 0) { msg.innerHTML = errBox("No hay calificaciones para guardar."); return; }
+          const { error } = await sb.from("calificaciones").upsert(filas, { onConflict: "criterio_id,alumno_id" });
+          if (error) { msg.innerHTML = errBox(error.message); return; }
+          msg.innerHTML = okBox("Calificaciones guardadas.");
+        });
+
+        document.querySelectorAll(".calValorInput").forEach(inp => inp.addEventListener("input", () => {
+          const alumnoId = inp.dataset.alumno;
+          valoresCache[alumnoId] = valoresCache[alumnoId] || {};
+          valoresCache[alumnoId][inp.dataset.criterio] = Number(inp.value) || 0;
+          const elFinal = document.getElementById(`calFinal_${alumnoId}`);
+          if (elFinal) elFinal.textContent = calcularFinal(alumnoId, criteriosPeriodo).toFixed(1);
+        }));
+      }
+    }
+
+    pintar();
+  }
 }
 
 init();
