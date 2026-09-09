@@ -434,162 +434,272 @@ function renderEnConstruccion(main, nombreModulo) {
 }
 
 // ============================================================
-// Módulo Inventario/Mobiliario
+// Módulo Inventario/Mobiliario (por categorías, con ID individual
+// por artículo y etiquetas imprimibles)
 // ============================================================
 const ESTADOS_MOBILIARIO = ["Bueno", "Regular", "Malo", "Fuera de servicio"];
 
 function renderMobiliario(main) {
+  let tabActivo = "categorias";
+  let categoriaSeleccionada = null;
+
   main.innerHTML = `
     <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Inventario / Mobiliario</h2>
-    <div class="max-w-2xl">
-      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-        <div class="flex gap-2 mb-2">
-          <input id="mobBuscarInput" placeholder="Buscar por nombre, folio o ubicación…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-          <button id="mobBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
-          <button id="mobNuevoBtn" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">+ Nuevo</button>
-        </div>
-      </div>
-      <div id="mobFormWrap"></div>
-      <div id="mobResultados"></div>
-    </div>`;
+    <div class="flex gap-1 mb-4">
+      <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="categorias">Categorías</button>
+      <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="articulos">Artículos</button>
+    </div>
+    <div id="mobContenido"></div>`;
 
-  document.getElementById("mobBuscarBtn").addEventListener("click", buscarMobiliario);
-  document.getElementById("mobBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscarMobiliario(); });
-  document.getElementById("mobNuevoBtn").addEventListener("click", () => mostrarFormularioMobiliario(null));
+  function pintarTabs() {
+    document.querySelectorAll(".mobTabBtn").forEach(b => {
+      const activo = b.dataset.tab === tabActivo;
+      b.style.background = activo ? "#1E3A8A" : "#F4F1EB";
+      b.style.color = activo ? "#fff" : "#1E3A8A";
+    });
+  }
+  document.querySelectorAll(".mobTabBtn").forEach(b => b.addEventListener("click", () => {
+    tabActivo = b.dataset.tab;
+    pintarTabs();
+    cargarTab();
+  }));
+  pintarTabs();
+  cargarTab();
 
-  buscarMobiliario();
-
-  async function buscarMobiliario() {
-    const criterio = document.getElementById("mobBuscarInput").value.trim();
-    const cont = document.getElementById("mobResultados");
-    cont.innerHTML = `<p class="text-xs mt-2" style="color:#6C7B8A">Buscando…</p>`;
-
-    let query = sb.from("mobiliario").select("*").order("creado_en", { ascending: false });
-    if (criterio) {
-      query = query.or(`nombre.ilike.%${criterio}%,folio.ilike.%${criterio}%,ubicacion.ilike.%${criterio}%`);
-    }
-    const { data, error } = await query;
-    if (error) { cont.innerHTML = errBox(error.message); return; }
-
-    if (!data || data.length === 0) {
-      cont.innerHTML = `<p class="text-sm mt-3" style="color:#6C7B8A">Sin resultados.</p>`;
-      return;
-    }
-
-    cont.innerHTML = `
-      <div class="mt-3 space-y-2">
-        ${data.map(r => `
-          <div class="p-3 rounded-xl bg-white border flex items-center justify-between gap-2" style="border-color:#E1DED5; ${!r.activo ? "opacity:0.5" : ""}">
-            <div class="flex-1">
-              <p class="text-sm font-semibold" style="color:#1E3A8A">${r.nombre} <span class="text-xs font-normal" style="color:#6C7B8A">(${r.folio})</span></p>
-              <p class="text-xs" style="color:#6C7B8A">${r.categoria || "Sin categoría"} · ${r.ubicacion || "Sin ubicación"} · Cant: ${r.cantidad} · Estado: ${r.estado}${!r.activo ? " · DADO DE BAJA" : ""}</p>
-            </div>
-            <div class="flex gap-1">
-              <button class="mobEditarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${r.id}" style="background:#F4F1EB; color:#1E3A8A">Editar</button>
-              <button class="mobBajaBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${r.id}" data-activo="${r.activo}" style="background:${r.activo ? "#F5E4E1" : "#E6F0EA"}; color:${r.activo ? "#B5453A" : "#3F7A5E"}">${r.activo ? "Dar de baja" : "Reactivar"}</button>
-            </div>
-          </div>`).join("")}
-      </div>`;
-
-    cont.querySelectorAll(".mobEditarBtn").forEach(b => b.addEventListener("click", () => {
-      const registro = data.find(r => r.id === b.dataset.id);
-      mostrarFormularioMobiliario(registro);
-    }));
-
-    cont.querySelectorAll(".mobBajaBtn").forEach(b => b.addEventListener("click", async () => {
-      const activo = b.dataset.activo === "true";
-      const { error } = await sb.from("mobiliario").update({ activo: !activo }).eq("id", b.dataset.id);
-      if (error) { alert(error.message); return; }
-      buscarMobiliario();
-    }));
+  function cargarTab() {
+    const cont = document.getElementById("mobContenido");
+    if (tabActivo === "categorias") return renderCategorias(cont);
+    if (tabActivo === "articulos") return renderArticulos(cont);
   }
 
-  function mostrarFormularioMobiliario(registro) {
-    const wrap = document.getElementById("mobFormWrap");
-    const esEdicion = !!registro;
-    wrap.innerHTML = `
-      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-        <p class="text-sm font-semibold mb-3" style="color:#1E3A8A">${esEdicion ? "Editar: " + registro.folio : "Nuevo mobiliario"}</p>
+  // ---------- Categorías ----------
+  async function renderCategorias(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("categorias_mobiliario").select("*").order("nombre");
+    if (error) { cont.innerHTML = errBox(error.message); return; }
+    const categorias = data || [];
 
-        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nombre / descripción</label>
-        <input id="mobNombre" value="${registro?.nombre || ""}" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
-
-        <div class="grid grid-cols-2 gap-2 mb-3">
-          <div>
-            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Categoría</label>
-            <input id="mobCategoria" value="${registro?.categoria || ""}" placeholder="Ej. Mobiliario, Cómputo…" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+    cont.innerHTML = `
+      <div class="max-w-lg">
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nueva categoría</p>
+          <div class="grid grid-cols-3 gap-2">
+            <input id="catNombre" placeholder="Ej. Butaca" class="col-span-2 px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="catPrefijo" placeholder="Prefijo (ej. BUT)" maxlength="5" class="px-2 py-1.5 rounded-lg text-sm outline-none border uppercase" style="border-color:#E1DED5" />
           </div>
-          <div>
-            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ubicación</label>
-            <input id="mobUbicacion" value="${registro?.ubicacion || ""}" placeholder="Ej. Aula 3B" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-          </div>
+          <p class="text-xs mt-1" style="color:#6C7B8A">El prefijo se usa para el ID de cada artículo (ej. BUT-001, BUT-002…).</p>
+          <div id="catMsg" class="mt-2"></div>
+          <button id="catGuardar" class="mt-2 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar categoría</button>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 mb-3">
-          <div>
-            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Cantidad</label>
-            <input id="mobCantidad" type="number" min="1" value="${registro?.cantidad ?? 1}" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-          </div>
-          <div>
-            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Estado</label>
-            <select id="mobEstado" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
-              ${ESTADOS_MOBILIARIO.map(e => `<option value="${e}" ${registro?.estado === e ? "selected" : ""}>${e}</option>`).join("")}
-            </select>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2 mb-3">
-          <div>
-            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Número de serie (opcional)</label>
-            <input id="mobSerie" value="${registro?.numero_serie || ""}" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-          </div>
-          <div>
-            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha de adquisición</label>
-            <input id="mobFecha" type="date" value="${registro?.fecha_adquisicion || ""}" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-          </div>
-        </div>
-
-        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Costo (opcional)</label>
-        <input id="mobCosto" type="number" step="0.01" value="${registro?.costo ?? ""}" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
-
-        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Observaciones (opcional)</label>
-        <textarea id="mobObservaciones" rows="2" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">${registro?.observaciones || ""}</textarea>
-
-        <div id="mobFormMsg"></div>
-        <div class="flex gap-2">
-          <button id="mobCancelarBtn" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
-          <button id="mobGuardarBtn" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar</button>
+        <div class="space-y-2">
+          ${categorias.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay categorías capturadas.</p>` : categorias.map(c => `
+            <div class="p-3 rounded-xl bg-white border flex items-center justify-between" style="border-color:#E1DED5">
+              <div>
+                <p class="text-sm font-semibold" style="color:#1E3A8A">${c.nombre}</p>
+                <p class="text-xs" style="color:#6C7B8A">Prefijo: ${c.prefijo} · Siguiente ID: ${c.prefijo}-${String(c.siguiente_numero).padStart(3, "0")}</p>
+              </div>
+            </div>`).join("")}
         </div>
       </div>`;
 
-    document.getElementById("mobCancelarBtn").addEventListener("click", () => { wrap.innerHTML = ""; });
+    document.getElementById("catPrefijo").addEventListener("input", (e) => { e.target.value = e.target.value.toUpperCase(); });
 
-    document.getElementById("mobGuardarBtn").addEventListener("click", async () => {
-      const msg = document.getElementById("mobFormMsg");
+    document.getElementById("catGuardar").addEventListener("click", async () => {
+      const nombre = document.getElementById("catNombre").value.trim();
+      const prefijo = document.getElementById("catPrefijo").value.trim().toUpperCase();
+      const msg = document.getElementById("catMsg");
       msg.innerHTML = "";
-      const nombre = document.getElementById("mobNombre").value.trim();
-      if (!nombre) { msg.innerHTML = errBox("Escribe el nombre o descripción del artículo."); return; }
-
-      const payload = {
-        nombre,
-        categoria: document.getElementById("mobCategoria").value.trim() || null,
-        ubicacion: document.getElementById("mobUbicacion").value.trim() || null,
-        cantidad: Number(document.getElementById("mobCantidad").value) || 1,
-        estado: document.getElementById("mobEstado").value,
-        numero_serie: document.getElementById("mobSerie").value.trim() || null,
-        fecha_adquisicion: document.getElementById("mobFecha").value || null,
-        costo: document.getElementById("mobCosto").value ? Number(document.getElementById("mobCosto").value) : null,
-        observaciones: document.getElementById("mobObservaciones").value.trim() || null,
-      };
-
-      const { error } = esEdicion
-        ? await sb.from("mobiliario").update(payload).eq("id", registro.id)
-        : await sb.from("mobiliario").insert(payload);
-
+      if (!nombre || !prefijo) { msg.innerHTML = errBox("Escribe el nombre y el prefijo de la categoría."); return; }
+      if (!/^[A-Z]{2,5}$/.test(prefijo)) { msg.innerHTML = errBox("El prefijo debe ser solo letras, de 2 a 5 caracteres."); return; }
+      const { error } = await sb.from("categorias_mobiliario").insert({ nombre, prefijo });
       if (error) { msg.innerHTML = errBox(error.message); return; }
-      wrap.innerHTML = "";
-      buscarMobiliario();
+      renderCategorias(cont);
     });
+  }
+
+  // ---------- Artículos ----------
+  async function renderArticulos(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando categorías…</p>`;
+    const { data: categorias, error } = await sb.from("categorias_mobiliario").select("*").order("nombre");
+    if (error) { cont.innerHTML = errBox(error.message); return; }
+    if (!categorias || categorias.length === 0) {
+      cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">Primero crea una categoría en la pestaña "Categorías".</p>`;
+      return;
+    }
+    if (!categoriaSeleccionada) categoriaSeleccionada = categorias[0].id;
+
+    async function pintar() {
+      const categoria = categorias.find(c => c.id === categoriaSeleccionada);
+      const { data: items, error: errItems } = await sb.from("mobiliario").select("*").eq("categoria_id", categoriaSeleccionada).order("id_etiqueta");
+      if (errItems) { cont.innerHTML = errBox(errItems.message); return; }
+
+      cont.innerHTML = `
+        <div class="max-w-2xl">
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Categoría</label>
+          <select id="artCategoriaSel" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${categorias.map(c => `<option value="${c.id}" ${c.id === categoriaSeleccionada ? "selected" : ""}>${c.nombre} (${c.prefijo})</option>`).join("")}
+          </select>
+
+          <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Agregar ${categoria.nombre.toLowerCase()}(s)</p>
+            <div class="grid grid-cols-3 gap-2 mb-2">
+              <input id="artCantidad" type="number" min="1" value="1" placeholder="Cantidad" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+              <input id="artUbicacion" placeholder="Ubicación (ej. Aula 3B)" class="col-span-2 px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            </div>
+            <div class="grid grid-cols-2 gap-2 mb-2">
+              <input id="artDescripcion" placeholder="Descripción (opcional)" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+              <select id="artEstado" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+                ${ESTADOS_MOBILIARIO.map(e => `<option value="${e}">${e}</option>`).join("")}
+              </select>
+            </div>
+            <div id="artAltaMsg"></div>
+            <button id="artAltaBtn" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
+          </div>
+
+          <div id="artLoteResultado"></div>
+
+          <div class="space-y-2">
+            ${items.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Sin artículos en esta categoría todavía.</p>` : items.map(it => `
+              <div class="p-3 rounded-xl bg-white border flex items-center justify-between gap-2" style="border-color:#E1DED5; ${!it.activo ? "opacity:0.5" : ""}">
+                <div class="flex-1">
+                  <p class="text-sm font-semibold" style="color:#1E3A8A">${it.id_etiqueta}${it.descripcion ? " — " + it.descripcion : ""}</p>
+                  <p class="text-xs" style="color:#6C7B8A">${it.ubicacion || "Sin ubicación"} · Estado: ${it.estado}${!it.activo ? " · DADO DE BAJA" : ""}</p>
+                </div>
+                <div class="flex gap-1">
+                  <button class="artImprimirBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${it.id}" style="background:#F4F1EB; color:#1E3A8A">🖨️</button>
+                  <button class="artEditarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${it.id}" style="background:#F4F1EB; color:#1E3A8A">Editar</button>
+                  <button class="artBajaBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${it.id}" data-activo="${it.activo}" style="background:${it.activo ? "#F5E4E1" : "#E6F0EA"}; color:${it.activo ? "#B5453A" : "#3F7A5E"}">${it.activo ? "Dar de baja" : "Reactivar"}</button>
+                </div>
+              </div>`).join("")}
+          </div>
+          <div id="mobEtiquetaWrap"></div>
+        </div>`;
+
+      document.getElementById("artCategoriaSel").addEventListener("change", (e) => {
+        categoriaSeleccionada = e.target.value;
+        pintar();
+      });
+
+      document.getElementById("artAltaBtn").addEventListener("click", async () => {
+        const cantidad = Number(document.getElementById("artCantidad").value) || 1;
+        const msg = document.getElementById("artAltaMsg");
+        msg.innerHTML = "";
+        if (cantidad < 1 || cantidad > 200) { msg.innerHTML = errBox("La cantidad debe ser entre 1 y 200."); return; }
+
+        const { data: nuevos, error: errAlta } = await sb.rpc("mobiliario_alta_lote", {
+          p_categoria_id: categoriaSeleccionada,
+          p_cantidad: cantidad,
+          p_descripcion: document.getElementById("artDescripcion").value.trim() || null,
+          p_ubicacion: document.getElementById("artUbicacion").value.trim() || null,
+          p_estado: document.getElementById("artEstado").value,
+        });
+        if (errAlta) { msg.innerHTML = errBox(errAlta.message); return; }
+
+        document.getElementById("artLoteResultado").innerHTML = `
+          ${okBox(`Se agregaron ${nuevos.length} artículo(s): ${nuevos.map(n => n.id_etiqueta).join(", ")}`)}
+          <button id="imprimirLoteBtn" class="mb-3 px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">🖨️ Imprimir etiquetas de este lote</button>`;
+
+        document.getElementById("imprimirLoteBtn").addEventListener("click", () => {
+          mostrarEtiquetas(nuevos.map(n => ({ id_etiqueta: n.id_etiqueta, categoria_nombre: categoria.nombre })));
+        });
+
+        pintar();
+      });
+
+      cont.querySelectorAll(".artEditarBtn").forEach(b => b.addEventListener("click", () => mostrarFormularioArticulo(items.find(it => it.id === b.dataset.id))));
+
+      cont.querySelectorAll(".artBajaBtn").forEach(b => b.addEventListener("click", async () => {
+        const activo = b.dataset.activo === "true";
+        const { error: errBaja } = await sb.from("mobiliario").update({ activo: !activo }).eq("id", b.dataset.id);
+        if (errBaja) { alert(errBaja.message); return; }
+        pintar();
+      }));
+
+      cont.querySelectorAll(".artImprimirBtn").forEach(b => b.addEventListener("click", () => {
+        const it = items.find(i => i.id === b.dataset.id);
+        mostrarEtiquetas([{ id_etiqueta: it.id_etiqueta, categoria_nombre: categoria.nombre }]);
+      }));
+    }
+
+    function mostrarFormularioArticulo(item) {
+      const wrap = document.getElementById("mobEtiquetaWrap");
+      wrap.innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mt-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-3" style="color:#1E3A8A">Editar: ${item.id_etiqueta}</p>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Descripción</label>
+          <input id="editDescripcion" value="${item.descripcion || ""}" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ubicación</label>
+          <input id="editUbicacion" value="${item.ubicacion || ""}" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Estado</label>
+          <select id="editEstado" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${ESTADOS_MOBILIARIO.map(e => `<option value="${e}" ${item.estado === e ? "selected" : ""}>${e}</option>`).join("")}
+          </select>
+          <div class="grid grid-cols-2 gap-2 mb-3">
+            <div>
+              <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Número de serie</label>
+              <input id="editSerie" value="${item.numero_serie || ""}" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha de adquisición</label>
+              <input id="editFecha" type="date" value="${item.fecha_adquisicion || ""}" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            </div>
+          </div>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Costo</label>
+          <input id="editCosto" type="number" step="0.01" value="${item.costo ?? ""}" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Observaciones</label>
+          <textarea id="editObservaciones" rows="2" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">${item.observaciones || ""}</textarea>
+          <div id="editMsg"></div>
+          <div class="flex gap-2">
+            <button id="editCancelar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
+            <button id="editGuardar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar</button>
+          </div>
+        </div>`;
+
+      document.getElementById("editCancelar").addEventListener("click", () => { wrap.innerHTML = ""; });
+
+      document.getElementById("editGuardar").addEventListener("click", async () => {
+        const msg = document.getElementById("editMsg");
+        const { error: errUpd } = await sb.from("mobiliario").update({
+          descripcion: document.getElementById("editDescripcion").value.trim() || null,
+          ubicacion: document.getElementById("editUbicacion").value.trim() || null,
+          estado: document.getElementById("editEstado").value,
+          numero_serie: document.getElementById("editSerie").value.trim() || null,
+          fecha_adquisicion: document.getElementById("editFecha").value || null,
+          costo: document.getElementById("editCosto").value ? Number(document.getElementById("editCosto").value) : null,
+          observaciones: document.getElementById("editObservaciones").value.trim() || null,
+        }).eq("id", item.id);
+        if (errUpd) { msg.innerHTML = errBox(errUpd.message); return; }
+        wrap.innerHTML = "";
+        pintar();
+      });
+    }
+
+    pintar();
+  }
+
+  function mostrarEtiquetas(lista) {
+    const modal = document.createElement("div");
+    modal.className = "fixed inset-0 z-50 flex items-center justify-center p-4";
+    modal.style.background = "rgba(28,43,58,0.7)";
+    modal.innerHTML = `
+      <div class="bg-white rounded-xl p-4 max-w-lg w-full max-h-[80vh] overflow-y-auto">
+        <div id="ibEtiquetasImprimibles" class="ib-imprimible grid grid-cols-2 gap-2">
+          ${lista.map(it => `
+            <div class="border rounded-lg p-2 text-center" style="border-color:#1E3A8A">
+              <p class="text-[9px]" style="color:#6C7B8A">Instituto Juan Bosco</p>
+              <p class="text-xs" style="color:#1E3A8A">${it.categoria_nombre}</p>
+              <p class="text-lg font-bold" style="color:#1E3A8A">${it.id_etiqueta}</p>
+            </div>`).join("")}
+        </div>
+        <div class="flex gap-2 mt-4">
+          <button id="etiquetasCerrar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cerrar</button>
+          <button id="etiquetasImprimir" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    document.getElementById("etiquetasCerrar").addEventListener("click", () => modal.remove());
+    document.getElementById("etiquetasImprimir").addEventListener("click", () => window.print());
   }
 }
 
