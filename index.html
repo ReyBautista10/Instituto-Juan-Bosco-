@@ -42,7 +42,16 @@
 // ============================================================
 const SUPABASE_URL = "https://eovlqcognikomdiwibuo.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmxxY29nbmlrb21kaXdpYnVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5NTkxMjMsImV4cCI6MjEwMzUzNTEyM30.YBj1IyMm_o6fEg_m8rOg1-4Z_lbXwYcGn-i1L4dn7_s";
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// La sesión se guarda en sessionStorage (no localStorage): al cerrar la
+// pestaña o el navegador, el propio navegador borra ese almacenamiento y
+// la sesión queda cerrada automáticamente — hay que volver a iniciar sesión.
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    storage: window.sessionStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+  },
+});
 
 // Módulos del sistema y qué roles pueden verlos.
 // Los marcados "construido: false" muestran un placeholder por ahora.
@@ -68,6 +77,53 @@ const state = {
 };
 
 const app = document.getElementById("app");
+
+// ============================================================
+// Cierre de sesión por inactividad
+// ============================================================
+// ⚠️ CONFIGURABLE: cambia este número para ajustar los minutos de inactividad
+// permitidos antes de cerrar la sesión automáticamente.
+const INACTIVIDAD_MINUTOS = 20;
+
+let inactividadTimer = null;
+let monitorInactividadIniciado = false;
+
+function iniciarMonitorInactividad() {
+  if (monitorInactividadIniciado) return;
+  monitorInactividadIniciado = true;
+
+  const eventosActividad = ["mousemove", "keydown", "click", "touchstart", "scroll"];
+  eventosActividad.forEach(ev => document.addEventListener(ev, reiniciarTimerInactividad));
+
+  // El conteo se pausa mientras la pestaña no está visible (cambiaste de app
+  // o de pestaña) y se reinicia al volver — así revisar un oficio en otra
+  // aplicación no cuenta como inactividad.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      reiniciarTimerInactividad();
+    } else if (inactividadTimer) {
+      clearTimeout(inactividadTimer);
+    }
+  });
+
+  reiniciarTimerInactividad();
+}
+
+function reiniciarTimerInactividad() {
+  if (document.visibilityState !== "visible") return;
+  if (inactividadTimer) clearTimeout(inactividadTimer);
+  inactividadTimer = setTimeout(async () => {
+    await sb.auth.signOut();
+    state.perfil = null;
+    renderLogin(errBox(`Tu sesión se cerró automáticamente por ${INACTIVIDAD_MINUTOS} minutos de inactividad.`));
+  }, INACTIVIDAD_MINUTOS * 60 * 1000);
+}
+
+function detenerMonitorInactividad() {
+  if (inactividadTimer) clearTimeout(inactividadTimer);
+  inactividadTimer = null;
+  monitorInactividadIniciado = false;
+}
 
 function errBox(texto) {
   return `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#F5E4E1; color:#B5453A">${texto}</div>`;
@@ -106,6 +162,7 @@ async function init() {
     }
     if (!session) {
       state.perfil = null;
+      detenerMonitorInactividad();
       renderLogin();
     }
   });
@@ -255,6 +312,7 @@ async function iniciarSesion() {
 async function cerrarSesion() {
   await sb.auth.signOut();
   state.perfil = null;
+  detenerMonitorInactividad();
   renderLogin();
 }
 
@@ -262,6 +320,7 @@ async function cerrarSesion() {
 // App principal: header + menú + contenido de la sección
 // ============================================================
 function renderApp() {
+  iniciarMonitorInactividad();
   const menuVisible = MENU.filter(m => m.roles.includes(state.perfil.rol));
 
   app.innerHTML = `
