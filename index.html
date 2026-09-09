@@ -91,13 +91,12 @@ function validarCorreo(correo) {
 // Arranque: revisa si ya hay sesión activa de Supabase Auth
 // ============================================================
 async function init() {
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) {
-    state.sesion = session;
-    await cargarPerfil();
-  } else {
-    renderLogin();
-  }
+  // Si la liga viene de un correo de recuperación de contraseña, Supabase la marca
+  // con "type=recovery" (en el hash o en los parámetros de la URL, según el caso).
+  // Hay que registrar el listener y detectarlo ANTES de revisar la sesión normal,
+  // porque si no, la app entra de una vez como si fuera un login común.
+  const parametrosURL = window.location.hash + window.location.search;
+  const esRecuperacion = parametrosURL.includes("type=recovery");
 
   sb.auth.onAuthStateChange((_event, session) => {
     state.sesion = session;
@@ -110,6 +109,19 @@ async function init() {
       renderLogin();
     }
   });
+
+  if (esRecuperacion) {
+    app.innerHTML = `<div class="min-h-screen flex items-center justify-center p-5"><p class="text-sm" style="color:#6C7B8A">Cargando…</p></div>`;
+    return; // esperamos a que dispare el evento PASSWORD_RECOVERY de arriba
+  }
+
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) {
+    state.sesion = session;
+    await cargarPerfil();
+  } else {
+    renderLogin();
+  }
 }
 
 async function cargarPerfil() {
