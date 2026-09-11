@@ -57,12 +57,12 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 // Los marcados "construido: false" muestran un placeholder por ahora.
 const MENU = [
   { id: "inicio", label: "Inicio", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
-  { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
+  { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
-  { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
-  { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: false },
+  { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
+  { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: true },
   { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
   { id: "avisos", label: "Disciplina y Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
   { id: "mobiliario", label: "Inventario/Mobiliario", roles: ["Administrador", "Director", "Secretaria"], construido: true },
@@ -405,6 +405,7 @@ function renderSeccion() {
   if (state.seccion === "catedraticos") return renderCatedraticos(main);
   if (state.seccion === "privacidad") return renderAvisoPrivacidad(main);
   if (state.seccion === "calificaciones") return renderCalificaciones(main);
+  if (state.seccion === "asistencia") return renderAsistencia(main);
 
   const modulo = MENU.find(m => m.id === state.seccion);
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
@@ -822,7 +823,7 @@ function renderAlumnos(main) {
     const [ciclosRes, gradosRes, profesRes] = await Promise.all([
       sb.from("ciclos_escolares").select("*").order("fecha_inicio", { ascending: false }),
       sb.from("grados").select("*").order("nivel").order("numero"),
-      sb.from("perfiles").select("id, nombre_completo").eq("rol", "Profesor").eq("activo", true).order("nombre_completo"),
+      sb.from("perfiles").select("id, nombre_completo").or("rol.eq.Profesor,es_catedratico.eq.true").eq("activo", true).order("nombre_completo"),
     ]);
     if (ciclosRes.error) { cont.innerHTML = errBox(ciclosRes.error.message); return; }
 
@@ -1376,7 +1377,16 @@ function renderAccesos(main) {
         <button id="gfImprimirBtn" class="w-40 mx-auto block mt-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir</button>`;
 
       const canvas = document.getElementById("gfQrCanvas");
-      await QRCode.toCanvas(canvas, persona.qr_token, { width: 180, margin: 1 });
+      if (!persona.qr_token) {
+        canvas.replaceWith(document.createTextNode(""));
+        document.getElementById("ibGafeteImprimible").insertAdjacentHTML("beforeend", errBox("Esta persona no tiene un código QR asignado. Verifica que la columna qr_token exista y tenga valor en la tabla correspondiente."));
+      } else {
+        try {
+          await QRCode.toCanvas(canvas, persona.qr_token, { width: 180, margin: 1 });
+        } catch (e) {
+          document.getElementById("ibGafeteImprimible").insertAdjacentHTML("beforeend", errBox("No se pudo generar el QR: " + e.message));
+        }
+      }
 
       document.getElementById("gfImprimirBtn").addEventListener("click", () => window.print());
     }
@@ -1470,6 +1480,9 @@ function renderCatedraticos(main) {
           <label class="flex items-center gap-2 text-sm mb-3" style="color:#1E3A8A">
             <input type="checkbox" id="prfActivo" ${perfil.activo ? "checked" : ""} ${esAdmin ? "" : "disabled"} /> Cuenta activa
           </label>
+          <label class="flex items-center gap-2 text-sm mb-3" style="color:#1E3A8A">
+            <input type="checkbox" id="prfCatedratico" ${perfil.es_catedratico ? "checked" : ""} ${esAdmin ? "" : "disabled"} /> También es catedrático (puede tener materias asignadas aunque su rol sea otro)
+          </label>
           <div id="prfMsg"></div>
           ${esAdmin ? `<button id="prfGuardar" class="w-full py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar cambios</button>` : `<p class="text-xs" style="color:#B5453A">Solo el Administrador puede editar estos datos.</p>`}
         </div>`;
@@ -1499,6 +1512,7 @@ function renderCatedraticos(main) {
             curp: curp || null,
             rol: document.getElementById("prfRol").value,
             activo: document.getElementById("prfActivo").checked,
+            es_catedratico: document.getElementById("prfCatedratico").checked,
           }).eq("id", perfil.id);
           if (error) { msg.innerHTML = errBox(error.message); return; }
           msg.innerHTML = okBox("Cambios guardados.");
@@ -1561,7 +1575,7 @@ function renderCatedraticos(main) {
     const [ciclosRes, materiasRes, profesRes] = await Promise.all([
       sb.from("ciclos_escolares").select("*").order("fecha_inicio", { ascending: false }),
       sb.from("materias").select("*").order("nombre"),
-      sb.from("perfiles").select("id, nombre_completo").eq("rol", "Profesor").eq("activo", true).order("nombre_completo"),
+      sb.from("perfiles").select("id, nombre_completo").or("rol.eq.Profesor,es_catedratico.eq.true").eq("activo", true).order("nombre_completo"),
     ]);
     if (ciclosRes.error) { cont.innerHTML = errBox(ciclosRes.error.message); return; }
 
@@ -1804,13 +1818,15 @@ function renderCalificaciones(main) {
     const { data, error } = await query;
     const sel = document.getElementById("calAsigSel");
     if (error) { sel.innerHTML = `<option>Error al cargar</option>`; return; }
-    const asignaciones = data || [];
+    // Filtramos cualquier fila con datos incompletos (ej. por permisos faltantes
+    // en alguna tabla relacionada), para no tronar al construir la lista.
+    const asignaciones = (data || []).filter(a => a.materias && a.grupos && a.grupos.grados && a.ciclos_escolares);
     if (asignaciones.length === 0) {
       sel.innerHTML = `<option value="">Sin clases asignadas</option>`;
       return;
     }
     sel.innerHTML = `<option value="">Selecciona…</option>` + asignaciones.map(a => `
-      <option value="${a.id}">${a.materias.nombre} — ${a.grupos.grados.nombre} "${a.grupos.letra}" (${a.grupos.grados.nivel}) — ${a.ciclos_escolares.nombre}${esAdmin ? " — " + a.perfiles.nombre_completo : ""}</option>
+      <option value="${a.id}">${a.materias.nombre} — ${a.grupos.grados.nombre} "${a.grupos.letra}" (${a.grupos.grados.nivel}) — ${a.ciclos_escolares.nombre}${esAdmin ? " — " + (a.perfiles?.nombre_completo || "") : ""}</option>
     `).join("");
     sel.addEventListener("change", () => {
       const asignacion = asignaciones.find(a => a.id === sel.value);
@@ -1961,6 +1977,154 @@ function renderCalificaciones(main) {
     }
 
     pintar();
+  }
+}
+
+// ============================================================
+// Módulo Asistencia (por materia asignada, con escaneo QR)
+// ============================================================
+let asiStreamActivo = null;
+
+function detenerCamaraAsistencia() {
+  if (asiStreamActivo) {
+    asiStreamActivo.getTracks().forEach(t => t.stop());
+    asiStreamActivo = null;
+  }
+}
+
+function renderAsistencia(main) {
+  detenerCamaraAsistencia();
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Asistencia</h2>
+    <div class="max-w-sm">
+      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Selecciona tu clase</label>
+      <select id="asiClaseSel" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5">
+        <option value="">Cargando…</option>
+      </select>
+      <div id="asiContenido"></div>
+    </div>`;
+
+  cargarClases();
+
+  async function cargarClases() {
+    const { data, error } = await sb
+      .from("profesor_materias_grupos")
+      .select("id, grupo_id, ciclo_escolar_id, materias(nombre), grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre)")
+      .eq("profesor_id", state.perfil.id);
+
+    const sel = document.getElementById("asiClaseSel");
+    if (error) { sel.innerHTML = `<option>Error al cargar</option>`; return; }
+    const clases = (data || []).filter(c => c.materias && c.grupos && c.grupos.grados && c.ciclos_escolares);
+    if (clases.length === 0) {
+      sel.innerHTML = `<option value="">No tienes materias asignadas</option>`;
+      return;
+    }
+    sel.innerHTML = `<option value="">Selecciona…</option>` + clases.map(c => `
+      <option value="${c.id}">${c.materias.nombre} — ${c.grupos.grados.nombre} "${c.grupos.letra}" (${c.grupos.grados.nivel})</option>
+    `).join("");
+    sel.addEventListener("change", () => {
+      detenerCamaraAsistencia();
+      const clase = clases.find(c => c.id === sel.value);
+      if (clase) iniciarPaseLista(clase); else document.getElementById("asiContenido").innerHTML = "";
+    });
+  }
+
+  async function iniciarPaseLista(clase) {
+    const cont = document.getElementById("asiContenido");
+    const hoy = new Date().toISOString().slice(0, 10);
+
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <p class="text-xs mb-2" style="color:#6C7B8A">Pase de lista de hoy (${hoy})</p>
+        <video id="asiVideo" class="w-full rounded-lg bg-black" style="max-height:240px; object-fit:cover" playsinline muted></video>
+        <canvas id="asiCanvas" style="display:none"></canvas>
+        <button id="asiIniciarBtn" class="w-full mt-2 py-2 rounded-lg text-sm font-semibold" style="background:#1E3A8A; color:#fff">Activar cámara</button>
+        <p id="asiCamMsg" class="text-xs mt-2" style="color:#B5453A"></p>
+        <div id="asiResultado" class="mt-2"></div>
+      </div>
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Ya registrados hoy (<span id="asiConteo">0</span>)</p>
+        <div id="asiListaHoy"></div>
+      </div>`;
+
+    document.getElementById("asiIniciarBtn").addEventListener("click", iniciarCamara);
+    cargarListaHoy();
+
+    async function iniciarCamara() {
+      const msg = document.getElementById("asiCamMsg");
+      msg.textContent = "";
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        asiStreamActivo = stream;
+        const video = document.getElementById("asiVideo");
+        video.srcObject = stream;
+        await video.play();
+        requestAnimationFrame(escanearCuadro);
+      } catch (err) {
+        msg.textContent = "No se pudo activar la cámara: " + err.message;
+      }
+    }
+
+    function escanearCuadro() {
+      if (!asiStreamActivo) return;
+      const video = document.getElementById("asiVideo");
+      const canvas = document.getElementById("asiCanvas");
+      if (!video) return;
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const codigo = jsQR(imageData.data, imageData.width, imageData.height);
+        if (codigo && codigo.data) {
+          procesarToken(codigo.data);
+          return;
+        }
+      }
+      requestAnimationFrame(escanearCuadro);
+    }
+
+    async function procesarToken(token) {
+      const resCont = document.getElementById("asiResultado");
+      const { data: alumno } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula").eq("qr_token", token).maybeSingle();
+
+      if (!alumno) {
+        resCont.innerHTML = errBox("Código QR no reconocido como alumno.");
+        requestAnimationFrame(escanearCuadro);
+        return;
+      }
+
+      const { error } = await sb.from("asistencia_clase").insert({
+        asignacion_id: clase.id, alumno_id: alumno.id, fecha: hoy, registrado_por: state.perfil.id,
+      });
+
+      if (error) {
+        if (error.code === "23505") {
+          resCont.innerHTML = okBox(`${alumno.nombres} ${alumno.apellido_paterno} ya estaba registrado hoy.`);
+        } else {
+          resCont.innerHTML = errBox(error.message);
+        }
+      } else {
+        resCont.innerHTML = okBox(`✓ Asistencia registrada: ${alumno.nombres} ${alumno.apellido_paterno}`);
+        cargarListaHoy();
+      }
+      requestAnimationFrame(escanearCuadro);
+    }
+
+    async function cargarListaHoy() {
+      const { data } = await sb
+        .from("asistencia_clase")
+        .select("hora, alumnos(nombres, apellido_paterno, apellido_materno, matricula)")
+        .eq("asignacion_id", clase.id)
+        .eq("fecha", hoy)
+        .order("hora");
+      const lista = data || [];
+      document.getElementById("asiConteo").textContent = lista.length;
+      document.getElementById("asiListaHoy").innerHTML = lista.length === 0
+        ? `<p class="text-xs" style="color:#6C7B8A">Nadie registrado todavía.</p>`
+        : lista.map(r => `<div class="text-sm py-1" style="color:#1C2B3A">${r.alumnos.nombres} ${r.alumnos.apellido_paterno} ${r.alumnos.apellido_materno || ""} <span class="text-xs" style="color:#6C7B8A">(${r.alumnos.matricula}) — ${new Date(r.hora).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</span></div>`).join("");
+    }
   }
 }
 
