@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Instituto Juan Bosco</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://unpkg.com/qrcode@1.5.0/build/qrcode.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -66,7 +64,7 @@ const MENU = [
   { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
   { id: "avisos", label: "Disciplina y Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
   { id: "mobiliario", label: "Inventario/Mobiliario", roles: ["Administrador", "Director", "Secretaria"], construido: true },
-  { id: "accesos", label: "Credenciales y Accesos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
+  { id: "accesos", label: "Entradas y Salidas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "usuarios", label: "Usuarios del Sistema", roles: ["Administrador"], construido: false },
 ];
 
@@ -398,6 +396,7 @@ function abrirModalCambiarPassword() {
 
 function renderSeccion() {
   const main = document.getElementById("main");
+  if (typeof detenerCamara === "function") detenerCamara();
   if (state.seccion === "inicio") return renderInicio(main);
   if (state.seccion === "mobiliario") return renderMobiliario(main);
   if (state.seccion === "alumnos") return renderAlumnos(main);
@@ -1159,26 +1158,199 @@ function renderAlumnos(main) {
 }
 
 // ============================================================
-// Módulo Credenciales y Accesos (QR: gafetes + entrada/salida)
+// Módulo Entradas y Salidas (reconocimiento facial)
+// Alumnos y personal. El reconocimiento se hace en el navegador con
+// face-api; en la base solo se guarda una representación numérica del
+// rostro (128 números por muestra), nunca la fotografía.
 // ============================================================
-let acStreamActivo = null;
 
-function detenerCamaraAccesos() {
-  if (acStreamActivo) {
-    acStreamActivo.getTracks().forEach(t => t.stop());
-    acStreamActivo = null;
+// ⚠️ CONFIGURABLE ─ ajustes del reconocimiento
+const FACE_LIB_URLS = [
+  "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js",
+  "https://unpkg.com/@vladmandic/face-api/dist/face-api.js",
+];
+const FACE_MODEL_URLS = [
+  "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/",
+  "https://vladmandic.github.io/face-api/model/",
+];
+const FACE_DIST_UMBRAL = 0.5;          // más bajo = más estricto (0.45–0.55 es un rango razonable)
+const FACE_FRAMES_CONFIRMACION = 3;    // cuadros seguidos con la misma persona antes de registrar
+const FACE_MIN_ANCHO = 0.2;            // el rostro debe ocupar al menos este % del ancho de la imagen
+const FACE_MUESTRAS_REGISTRO = 5;      // muestras que se guardan por persona
+const FACE_BLOQUEO_MIN_MS = 15000;     // tiempo mínimo antes de poder registrar otra vez a la misma persona
+const FACE_BLOQUEO_AUSENCIA_MS = 5000; // y debe haber salido de la imagen al menos este tiempo
+const FACE_RECARGA_MS = 5 * 60 * 1000; // cada cuánto se vuelven a leer los rostros registrados
+
+let faceListo = null;
+let camStream = null;
+let kioskSesion = 0;
+let wakeLockRef = null;
+let cachePersonalAcceso = null;
+
+function escHtml(texto) {
+  return String(texto ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function normalizarTexto(s) {
+  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+function esperar(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function detenerCamara() {
+  kioskSesion++;
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  if (wakeLockRef) { try { wakeLockRef.release(); } catch (e) {} wakeLockRef = null; }
+}
+
+async function mantenerPantallaEncendida() {
+  try { if (navigator.wakeLock) wakeLockRef = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+
+async function iniciarCamara(videoEl) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("Este navegador no permite usar la cámara (se requiere conexión segura https).");
   }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+    audio: false,
+  });
+  camStream = stream;
+  videoEl.srcObject = stream;
+  await videoEl.play();
+}
+
+function cargarScriptExterno(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => { s.remove(); reject(new Error("No se pudo cargar " + src)); };
+    document.head.appendChild(s);
+  });
+}
+
+// Carga la librería y los modelos solo la primera vez que se necesitan.
+async function cargarReconocimientoFacial() {
+  if (faceListo) return faceListo;
+  faceListo = (async () => {
+    if (!window.faceapi) {
+      let ok = false;
+      for (const url of FACE_LIB_URLS) {
+        try { await cargarScriptExterno(url); if (window.faceapi) { ok = true; break; } } catch (e) {}
+      }
+      if (!ok) throw new Error("No se pudo cargar la librería de reconocimiento facial. Revisa la conexión a internet.");
+    }
+    let cargados = false;
+    for (const base of FACE_MODEL_URLS) {
+      try {
+        await Promise.all([
+          faceapi.nets.tinyFaceDetector.loadFromUri(base),
+          faceapi.nets.faceLandmark68Net.loadFromUri(base),
+          faceapi.nets.faceRecognitionNet.loadFromUri(base),
+        ]);
+        cargados = true;
+        break;
+      } catch (e) {}
+    }
+    if (!cargados) throw new Error("No se pudieron cargar los modelos de reconocimiento facial. Revisa la conexión a internet.");
+  })();
+  faceListo.catch(() => { faceListo = null; });
+  return faceListo;
+}
+
+function opcionesDetector() {
+  return new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+}
+
+// El personal se consulta por una función de la base: así la Secretaria puede
+// ver nombres sin tener acceso al resto de los datos de los perfiles.
+async function cargarPersonalAcceso(forzar) {
+  if (cachePersonalAcceso && !forzar) return cachePersonalAcceso;
+  const { data, error } = await sb.rpc("personal_para_acceso");
+  if (error) throw error;
+  cachePersonalAcceso = data || [];
+  return cachePersonalAcceso;
+}
+
+function nombreAlumno(a) {
+  return `${a.nombres} ${a.apellido_paterno} ${a.apellido_materno || ""}`.trim();
+}
+
+// Lee los rostros registrados de alumnos y personal activos.
+async function cargarRostros() {
+  const [rostrosRes, personal] = await Promise.all([
+    sb.from("rostros").select("id, tipo_persona, alumno_id, perfil_id, descriptores, alumnos(nombres, apellido_paterno, apellido_materno, matricula, activo)"),
+    cargarPersonalAcceso(true),
+  ]);
+  if (rostrosRes.error) throw rostrosRes.error;
+  const mapaPersonal = new Map(personal.map(p => [p.id, p]));
+  const personas = [];
+  (rostrosRes.data || []).forEach(r => {
+    const esAlumno = r.tipo_persona === "Alumno";
+    const info = esAlumno ? r.alumnos : mapaPersonal.get(r.perfil_id);
+    if (!info || info.activo === false) return;
+    personas.push({
+      clave: esAlumno ? "A:" + r.alumno_id : "P:" + r.perfil_id,
+      tipo: r.tipo_persona,
+      alumno_id: r.alumno_id,
+      perfil_id: r.perfil_id,
+      nombre: esAlumno ? nombreAlumno(info) : info.nombre_completo,
+      detalle: esAlumno ? info.matricula : info.rol,
+      descriptores: (r.descriptores || []).map(d => new Float32Array(d)),
+    });
+  });
+  return personas;
+}
+
+function crearMatcher(personas) {
+  const validas = personas.filter(p => p.descriptores.length > 0);
+  if (validas.length === 0) return null;
+  return new faceapi.FaceMatcher(
+    validas.map(p => new faceapi.LabeledFaceDescriptors(p.clave, p.descriptores)),
+    FACE_DIST_UMBRAL
+  );
+}
+
+// Registra la siguiente marca de la persona: Entrada si no tiene una entrada hoy,
+// Salida si ya entró hoy. Si su último movimiento es de un día anterior, empieza con Entrada.
+async function registrarMovimiento(persona, metodo, distancia) {
+  const esAlumno = persona.tipo === "Alumno";
+  const inicioDia = new Date();
+  inicioDia.setHours(0, 0, 0, 0);
+
+  const { data: ultimo, error: errUltimo } = await sb
+    .from("registros_acceso")
+    .select("tipo_evento, fecha_hora")
+    .eq(esAlumno ? "alumno_id" : "perfil_id", esAlumno ? persona.alumno_id : persona.perfil_id)
+    .order("fecha_hora", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (errUltimo) throw errUltimo;
+
+  const entroHoy = ultimo && ultimo.tipo_evento === "Entrada" && new Date(ultimo.fecha_hora) >= inicioDia;
+  const evento = entroHoy ? "Salida" : "Entrada";
+
+  const { error } = await sb.from("registros_acceso").insert({
+    tipo_persona: persona.tipo,
+    alumno_id: esAlumno ? persona.alumno_id : null,
+    perfil_id: esAlumno ? null : persona.perfil_id,
+    tipo_evento: evento,
+    registrado_por: state.perfil.id,
+    metodo,
+    distancia: distancia != null ? Number(distancia.toFixed(3)) : null,
+  });
+  if (error) throw error;
+  return evento;
 }
 
 function renderAccesos(main) {
-  let tabActivo = "escanear";
-  detenerCamaraAccesos();
+  let tabActivo = "registro";
+  detenerCamara();
 
   main.innerHTML = `
-    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Credenciales y Accesos</h2>
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Entradas y Salidas</h2>
     <div class="flex gap-1 mb-4">
-      <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="escanear">Escanear</button>
-      <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="gafetes">Gafetes</button>
+      <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="registro">Registro</button>
+      <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="rostros">Registrar rostros</button>
     </div>
     <div id="acContenido"></div>`;
 
@@ -1191,7 +1363,7 @@ function renderAccesos(main) {
   }
 
   document.querySelectorAll(".acTabBtn").forEach(b => b.addEventListener("click", () => {
-    detenerCamaraAccesos();
+    detenerCamara();
     tabActivo = b.dataset.tab;
     pintarTabs();
     cargarTab();
@@ -1202,195 +1374,476 @@ function renderAccesos(main) {
 
   function cargarTab() {
     const cont = document.getElementById("acContenido");
-    if (tabActivo === "escanear") return renderEscanear(cont);
-    if (tabActivo === "gafetes") return renderGafetes(cont);
+    if (tabActivo === "registro") return renderRegistroFacial(cont);
+    if (tabActivo === "rostros") return renderRegistrarRostros(cont);
   }
 
-  // ---------- Escanear (entrada/salida) ----------
-  function renderEscanear(cont) {
+  // ---------- Registro de entradas y salidas ----------
+  function renderRegistroFacial(cont) {
+    let personas = [];
+    let matcher = null;
+    let ultimaCarga = 0;
+    let bannerTimer = null;
+
     cont.innerHTML = `
-      <div class="max-w-sm">
+      <div class="max-w-md">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-          <video id="acVideo" class="w-full rounded-lg bg-black" style="max-height:260px; object-fit:cover" playsinline muted></video>
-          <canvas id="acCanvas" style="display:none"></canvas>
-          <button id="acIniciar" class="w-full mt-2 py-2 rounded-lg text-sm font-semibold" style="background:#1E3A8A; color:#fff">Activar cámara</button>
-          <p id="acCamMsg" class="text-xs mt-2" style="color:#B5453A"></p>
+          <video id="rfVideo" class="w-full rounded-lg bg-black" style="max-height:300px; object-fit:cover; transform:scaleX(-1)" playsinline muted></video>
+          <p id="rfEstado" class="text-xs mt-2" style="color:#6C7B8A">La cámara está apagada.</p>
+          <div class="flex gap-2 mt-2">
+            <button id="rfIniciar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Iniciar reconocimiento</button>
+            <button id="rfDetener" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A; display:none">Detener</button>
+          </div>
         </div>
-        <div id="acResultado"></div>
+        <div id="rfResultado" class="mb-3"></div>
+
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Registro manual</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">Úsalo si el rostro no se reconoce o la cámara no está disponible.</p>
+          <div class="flex gap-2">
+            <input id="rfManualInput" placeholder="Buscar alumno o personal por nombre…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <button id="rfManualBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+          </div>
+          <div id="rfManualResultados" class="mt-2"></div>
+        </div>
+
+        <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Movimientos de hoy</p>
+          <div id="rfHoy"><p class="text-xs" style="color:#6C7B8A">Cargando…</p></div>
+        </div>
       </div>`;
 
-    document.getElementById("acIniciar").addEventListener("click", iniciarCamara);
+    document.getElementById("rfIniciar").addEventListener("click", iniciar);
+    document.getElementById("rfDetener").addEventListener("click", () => { detenerCamara(); restablecerBotones("La cámara está apagada."); });
+    document.getElementById("rfManualBtn").addEventListener("click", buscarManual);
+    document.getElementById("rfManualInput").addEventListener("keydown", e => { if (e.key === "Enter") buscarManual(); });
+    cargarHoy();
 
-    async function iniciarCamara() {
-      const msg = document.getElementById("acCamMsg");
-      msg.textContent = "";
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        acStreamActivo = stream;
-        const video = document.getElementById("acVideo");
-        video.srcObject = stream;
-        await video.play();
-        requestAnimationFrame(escanearCuadro);
-      } catch (err) {
-        msg.textContent = "No se pudo activar la cámara: " + err.message;
-      }
+    function restablecerBotones(textoEstado) {
+      const ini = document.getElementById("rfIniciar");
+      const det = document.getElementById("rfDetener");
+      const est = document.getElementById("rfEstado");
+      if (!ini) return;
+      ini.style.display = "";
+      ini.disabled = false;
+      det.style.display = "none";
+      est.textContent = textoEstado || "";
     }
 
-    function escanearCuadro() {
-      if (!acStreamActivo) return;
-      const video = document.getElementById("acVideo");
-      const canvas = document.getElementById("acCanvas");
-      if (!video) return;
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const codigo = jsQR(imageData.data, imageData.width, imageData.height);
-        if (codigo && codigo.data) {
-          detenerCamaraAccesos();
-          procesarToken(codigo.data);
+    function mostrarBanner(html) {
+      const cont2 = document.getElementById("rfResultado");
+      if (!cont2) return;
+      cont2.innerHTML = html;
+      if (bannerTimer) clearTimeout(bannerTimer);
+      bannerTimer = setTimeout(() => { const c = document.getElementById("rfResultado"); if (c) c.innerHTML = ""; }, 6000);
+    }
+
+    function bannerRegistro(persona, evento, metodo) {
+      const hora = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+      const colorFondo = evento === "Entrada" ? "#E6F0EA" : "#E8EDF7";
+      const colorBorde = evento === "Entrada" ? "#3F7A5E" : "#1E3A8A";
+      return `
+        <div class="p-4 rounded-xl" style="background:${colorFondo}; border:1px solid ${colorBorde}">
+          <p class="text-base font-bold" style="color:#1E3A8A">${escHtml(persona.nombre)}</p>
+          <p class="text-xs" style="color:#6C7B8A">${persona.tipo === "Alumno" ? "Alumno · " : "Personal · "}${escHtml(persona.detalle || "")}</p>
+          <p class="text-lg font-bold mt-1" style="color:${colorBorde}">${evento} registrada — ${hora}${metodo === "Manual" ? " (manual)" : ""}</p>
+        </div>`;
+    }
+
+    async function iniciar() {
+      const ini = document.getElementById("rfIniciar");
+      const est = document.getElementById("rfEstado");
+      ini.disabled = true;
+      document.getElementById("rfResultado").innerHTML = "";
+      try {
+        est.textContent = "Cargando reconocimiento facial (la primera vez puede tardar)…";
+        await cargarReconocimientoFacial();
+        est.textContent = "Cargando rostros registrados…";
+        personas = await cargarRostros();
+        ultimaCarga = Date.now();
+        matcher = crearMatcher(personas);
+        if (!matcher) {
+          restablecerBotones("");
+          document.getElementById("rfResultado").innerHTML = errBox("Todavía no hay rostros registrados. Ve a la pestaña \"Registrar rostros\".");
           return;
         }
-      }
-      requestAnimationFrame(escanearCuadro);
-    }
-
-    async function procesarToken(token) {
-      const resCont = document.getElementById("acResultado");
-      resCont.innerHTML = `<p class="text-xs mt-2" style="color:#6C7B8A">Procesando…</p>`;
-
-      const { data: alumno } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula").eq("qr_token", token).maybeSingle();
-      const { data: perfil } = !alumno ? await sb.from("perfiles").select("id, nombre_completo, rol").eq("qr_token", token).maybeSingle() : { data: null };
-
-      if (!alumno && !perfil) {
-        resCont.innerHTML = errBox("Código QR no reconocido.") + `<button id="acOtro" class="w-full mt-2 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Escanear otro</button>`;
-        document.getElementById("acOtro").addEventListener("click", () => renderEscanear(cont));
+        est.textContent = "Activando cámara…";
+        await iniciarCamara(document.getElementById("rfVideo"));
+      } catch (err) {
+        detenerCamara();
+        restablecerBotones("");
+        document.getElementById("rfResultado").innerHTML = errBox(escHtml(err.message || "No se pudo iniciar el reconocimiento."));
         return;
       }
 
-      const tipoPersona = alumno ? "Alumno" : "Personal";
-      const personaId = alumno ? alumno.id : perfil.id;
-      const nombreMostrar = alumno ? `${alumno.nombres} ${alumno.apellido_paterno} ${alumno.apellido_materno || ""}` : perfil.nombre_completo;
+      const sesion = ++kioskSesion;
+      mantenerPantallaEncendida();
+      ini.style.display = "none";
+      document.getElementById("rfDetener").style.display = "";
+      est.textContent = `Reconocimiento activo (${personas.length} rostros registrados). Acércate a la cámara.`;
+      bucle(sesion);
+    }
 
-      const { data: ultimo } = await sb
-        .from("registros_acceso")
-        .select("tipo_evento")
-        .eq(alumno ? "alumno_id" : "perfil_id", personaId)
-        .order("fecha_hora", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    async function bucle(sesion) {
+      const candidatos = new Map(); // clave -> cuadros seguidos
+      const bloqueados = new Map(); // clave -> { registradoEn, ultimaVez }
+      let desconocidos = 0;
+      let ultimoAviso = 0;
+      let ultimoKeepAlive = 0;
 
-      const siguienteEvento = (ultimo && ultimo.tipo_evento === "Entrada") ? "Salida" : "Entrada";
+      while (sesion === kioskSesion && camStream) {
+        const video = document.getElementById("rfVideo");
+        if (!video) break;
+        const ahora = Date.now();
 
-      const { error } = await sb.from("registros_acceso").insert({
-        tipo_persona: tipoPersona,
-        alumno_id: alumno ? alumno.id : null,
-        perfil_id: alumno ? null : perfil.id,
-        tipo_evento: siguienteEvento,
-        registrado_por: state.perfil.id,
-      });
+        // Mantiene viva la sesión mientras el reconocimiento está activo en esta pantalla.
+        if (ahora - ultimoKeepAlive > 30000) { reiniciarTimerInactividad(); ultimoKeepAlive = ahora; }
 
-      if (error) { resCont.innerHTML = errBox(error.message); return; }
+        // Vuelve a leer los rostros por si se registraron o dieron de baja personas.
+        if (ahora - ultimaCarga > FACE_RECARGA_MS) {
+          try { personas = await cargarRostros(); matcher = crearMatcher(personas) || matcher; ultimaCarga = Date.now(); } catch (e) { ultimaCarga = Date.now(); }
+        }
 
-      const hora = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
-      resCont.innerHTML = `
-        <div class="p-4 rounded-xl mt-2" style="background:#E6F0EA; border:1px solid #3F7A5E">
-          <p class="text-sm font-semibold" style="color:#1E3A8A">${nombreMostrar}</p>
-          <p class="text-xs" style="color:#6C7B8A">${tipoPersona === "Alumno" ? "Alumno · " + alumno.matricula : "Personal · " + perfil.rol}</p>
-          <p class="text-sm font-bold mt-2" style="color:#3F7A5E">${siguienteEvento} registrada — ${hora}</p>
-        </div>
-        <button id="acOtro" class="w-full mt-2 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Escanear otro</button>`;
-      document.getElementById("acOtro").addEventListener("click", () => renderEscanear(cont));
+        try {
+          const detecciones = await faceapi.detectAllFaces(video, opcionesDetector()).withFaceLandmarks().withFaceDescriptors();
+          const vistos = new Set();
+          let hayDesconocido = false;
+
+          for (const det of detecciones) {
+            if (det.detection.box.width / video.videoWidth < FACE_MIN_ANCHO) continue;
+            const mejor = matcher.findBestMatch(det.descriptor);
+            if (mejor.label === "unknown") { hayDesconocido = true; continue; }
+
+            vistos.add(mejor.label);
+            const bloqueo = bloqueados.get(mejor.label);
+            if (bloqueo) { bloqueo.ultimaVez = ahora; continue; }
+
+            const frames = (candidatos.get(mejor.label) || 0) + 1;
+            candidatos.set(mejor.label, frames);
+            if (frames >= FACE_FRAMES_CONFIRMACION) {
+              candidatos.delete(mejor.label);
+              bloqueados.set(mejor.label, { registradoEn: ahora, ultimaVez: ahora });
+              const persona = personas.find(p => p.clave === mejor.label);
+              if (persona) {
+                try {
+                  const evento = await registrarMovimiento(persona, "Rostro", mejor.distance);
+                  mostrarBanner(bannerRegistro(persona, evento, "Rostro"));
+                  cargarHoy();
+                } catch (e) {
+                  bloqueados.delete(mejor.label);
+                  mostrarBanner(errBox("No se pudo registrar a " + escHtml(persona.nombre) + ": " + escHtml(e.message)));
+                }
+              }
+            }
+          }
+
+          for (const clave of [...candidatos.keys()]) if (!vistos.has(clave)) candidatos.delete(clave);
+          for (const [clave, b] of [...bloqueados.entries()]) {
+            if (ahora - b.ultimaVez >= FACE_BLOQUEO_AUSENCIA_MS && ahora - b.registradoEn >= FACE_BLOQUEO_MIN_MS) bloqueados.delete(clave);
+          }
+
+          if (hayDesconocido && vistos.size === 0) desconocidos++; else desconocidos = 0;
+          if (desconocidos >= 8 && ahora - ultimoAviso > 6000) {
+            ultimoAviso = ahora;
+            desconocidos = 0;
+            mostrarBanner(errBox("Rostro no reconocido. Intenta de frente y con buena luz, o usa el registro manual."));
+          }
+        } catch (e) {
+          // un cuadro fallido no detiene el reconocimiento
+        }
+        await esperar(200);
+      }
+    }
+
+    // ----- Registro manual -----
+    async function buscarManual() {
+      const criterio = document.getElementById("rfManualInput").value.trim();
+      const res = document.getElementById("rfManualResultados");
+      if (!criterio) { res.innerHTML = ""; return; }
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Buscando…</p>`;
+      try {
+        const limpio = criterio.replace(/[,()%*]/g, " ").trim();
+        const [alumnosRes, personal] = await Promise.all([
+          sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula")
+            .eq("activo", true)
+            .or(`nombres.ilike.%${limpio}%,apellido_paterno.ilike.%${limpio}%,apellido_materno.ilike.%${limpio}%,matricula.ilike.%${limpio}%`)
+            .limit(15),
+          cargarPersonalAcceso(),
+        ]);
+        if (alumnosRes.error) throw alumnosRes.error;
+
+        const q = normalizarTexto(limpio);
+        const encontrados = [
+          ...(alumnosRes.data || []).map(a => ({ tipo: "Alumno", alumno_id: a.id, perfil_id: null, nombre: nombreAlumno(a), detalle: a.matricula })),
+          ...personal.filter(p => p.activo && normalizarTexto(p.nombre_completo).includes(q))
+            .slice(0, 15).map(p => ({ tipo: "Personal", alumno_id: null, perfil_id: p.id, nombre: p.nombre_completo, detalle: p.rol })),
+        ];
+
+        res.innerHTML = encontrados.length === 0
+          ? `<p class="text-xs" style="color:#6C7B8A">Sin resultados.</p>`
+          : encontrados.map((p, i) => `
+              <button class="rfManualSel w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-idx="${i}" style="border-color:#E1DED5; color:#1E3A8A">
+                ${escHtml(p.nombre)} <span class="text-xs" style="color:#6C7B8A">(${p.tipo} · ${escHtml(p.detalle || "")})</span>
+              </button>`).join("");
+
+        res.querySelectorAll(".rfManualSel").forEach(b => b.addEventListener("click", async () => {
+          const persona = encontrados[Number(b.dataset.idx)];
+          try {
+            const evento = await registrarMovimiento(persona, "Manual", null);
+            mostrarBanner(bannerRegistro(persona, evento, "Manual"));
+            document.getElementById("rfManualResultados").innerHTML = "";
+            document.getElementById("rfManualInput").value = "";
+            cargarHoy();
+          } catch (e) {
+            mostrarBanner(errBox(escHtml(e.message)));
+          }
+        }));
+      } catch (e) {
+        res.innerHTML = errBox(escHtml(e.message));
+      }
+    }
+
+    // ----- Movimientos de hoy -----
+    async function cargarHoy() {
+      const caja = document.getElementById("rfHoy");
+      if (!caja) return;
+      try {
+        const inicio = new Date();
+        inicio.setHours(0, 0, 0, 0);
+        const [regRes, personal] = await Promise.all([
+          sb.from("registros_acceso")
+            .select("tipo_persona, tipo_evento, fecha_hora, metodo, perfil_id, alumnos(nombres, apellido_paterno, apellido_materno)")
+            .gte("fecha_hora", inicio.toISOString())
+            .order("fecha_hora", { ascending: false })
+            .limit(100),
+          cargarPersonalAcceso(),
+        ]);
+        if (regRes.error) throw regRes.error;
+        const mapaPersonal = new Map(personal.map(p => [p.id, p.nombre_completo]));
+        const lista = regRes.data || [];
+        const caja2 = document.getElementById("rfHoy");
+        if (!caja2) return;
+        caja2.innerHTML = lista.length === 0
+          ? `<p class="text-xs" style="color:#6C7B8A">Sin movimientos hoy.</p>`
+          : lista.map(r => {
+              const nombre = r.tipo_persona === "Alumno" ? (r.alumnos ? nombreAlumno(r.alumnos) : "Alumno") : (mapaPersonal.get(r.perfil_id) || "Personal");
+              const hora = new Date(r.fecha_hora).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+              const color = r.tipo_evento === "Entrada" ? "#3F7A5E" : "#1E3A8A";
+              return `<div class="text-sm py-1 flex justify-between gap-2" style="color:#1C2B3A">
+                <span>${escHtml(nombre)} <span class="text-xs" style="color:#6C7B8A">${r.tipo_persona === "Personal" ? "(personal)" : ""}${r.metodo === "Manual" ? " · manual" : ""}</span></span>
+                <span class="text-xs font-semibold whitespace-nowrap" style="color:${color}">${r.tipo_evento} ${hora}</span>
+              </div>`;
+            }).join("");
+      } catch (e) {
+        caja.innerHTML = errBox(escHtml(e.message));
+      }
     }
   }
 
-  // ---------- Gafetes ----------
-  function renderGafetes(cont) {
+  // ---------- Registrar rostros ----------
+  function renderRegistrarRostros(cont) {
     cont.innerHTML = `
       <div class="max-w-md">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
           <div class="flex gap-2 mb-2">
-            <select id="gfTipoSel" class="px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
-              <option value="alumno">Alumno</option>
-              <option value="personal">Personal</option>
+            <select id="rrTipoSel" class="px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+              <option value="Alumno">Alumno</option>
+              <option value="Personal">Personal</option>
             </select>
-            <input id="gfBuscarInput" placeholder="Buscar por nombre…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <button id="gfBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+            <input id="rrBuscarInput" placeholder="Buscar por nombre…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <button id="rrBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
           </div>
-          <div id="gfResultados"></div>
+          <div id="rrResultados"></div>
         </div>
-        <div id="gfBadgeWrap"></div>
+        <div id="rrPanel"></div>
       </div>`;
 
-    document.getElementById("gfBuscarBtn").addEventListener("click", buscar);
-    document.getElementById("gfBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+    document.getElementById("rrBuscarBtn").addEventListener("click", buscar);
+    document.getElementById("rrBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
 
     async function buscar() {
-      const tipo = document.getElementById("gfTipoSel").value;
-      const criterio = document.getElementById("gfBuscarInput").value.trim();
-      const resCont = document.getElementById("gfResultados");
-      if (!criterio) { resCont.innerHTML = ""; return; }
-      resCont.innerHTML = `<p class="text-xs mt-2" style="color:#6C7B8A">Buscando…</p>`;
-
-      if (tipo === "alumno") {
-        const { data, error } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula, qr_token")
-          .or(`nombres.ilike.%${criterio}%,apellido_paterno.ilike.%${criterio}%,matricula.ilike.%${criterio}%`);
-        if (error) { resCont.innerHTML = errBox(error.message); return; }
-        pintarResultados(resCont, (data || []).map(a => ({
-          id: a.id, nombre: `${a.nombres} ${a.apellido_paterno} ${a.apellido_materno || ""}`,
-          subtitulo: a.matricula, qr_token: a.qr_token, tipo: "alumno",
-        })));
-      } else {
-        const { data, error } = await sb.from("perfiles").select("id, nombre_completo, rol, qr_token")
-          .ilike("nombre_completo", `%${criterio}%`);
-        if (error) { resCont.innerHTML = errBox(error.message); return; }
-        pintarResultados(resCont, (data || []).map(p => ({
-          id: p.id, nombre: p.nombre_completo, subtitulo: p.rol, qr_token: p.qr_token, tipo: "personal",
-        })));
-      }
-    }
-
-    function pintarResultados(resCont, lista) {
-      resCont.innerHTML = lista.length === 0
-        ? `<p class="text-xs mt-2" style="color:#6C7B8A">Sin resultados.</p>`
-        : `<div class="mt-2 space-y-1">${lista.map((p, i) => `
-            <button class="gfSelBtn w-full text-left px-3 py-2 rounded-lg text-sm bg-white border" data-idx="${i}" style="border-color:#E1DED5; color:#1E3A8A">
-              ${p.nombre} <span class="text-xs" style="color:#6C7B8A">(${p.subtitulo})</span>
-            </button>`).join("")}</div>`;
-      resCont.querySelectorAll(".gfSelBtn").forEach(b => b.addEventListener("click", () => mostrarGafete(lista[Number(b.dataset.idx)])));
-    }
-
-    async function mostrarGafete(persona) {
-      const wrap = document.getElementById("gfBadgeWrap");
-      wrap.innerHTML = `<p class="text-xs mt-3" style="color:#6C7B8A">Generando gafete…</p>`;
-
-      wrap.innerHTML = `
-        <div id="ibGafeteImprimible" class="ib-imprimible mt-4 mx-auto p-4 rounded-xl bg-white border text-center" style="border-color:#E1DED5; width:280px">
-          <div class="ib-brand text-sm font-semibold" style="color:#1E3A8A">Instituto Juan Bosco</div>
-          <div class="text-[10px] mb-2" style="color:#6C7B8A">${persona.tipo === "alumno" ? "Credencial de Alumno" : "Credencial de Personal"}</div>
-          <canvas id="gfQrCanvas" class="mx-auto"></canvas>
-          <p class="text-sm font-bold mt-2" style="color:#1E3A8A">${persona.nombre}</p>
-          <p class="text-xs" style="color:#6C7B8A">${persona.subtitulo}</p>
-        </div>
-        <button id="gfImprimirBtn" class="w-40 mx-auto block mt-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir</button>`;
-
-      const canvas = document.getElementById("gfQrCanvas");
-      if (!persona.qr_token) {
-        canvas.replaceWith(document.createTextNode(""));
-        document.getElementById("ibGafeteImprimible").insertAdjacentHTML("beforeend", errBox("Esta persona no tiene un código QR asignado. Verifica que la columna qr_token exista y tenga valor en la tabla correspondiente."));
-      } else {
-        try {
-          await QRCode.toCanvas(canvas, persona.qr_token, { width: 180, margin: 1 });
-        } catch (e) {
-          document.getElementById("ibGafeteImprimible").insertAdjacentHTML("beforeend", errBox("No se pudo generar el QR: " + e.message));
+      const tipo = document.getElementById("rrTipoSel").value;
+      const criterio = document.getElementById("rrBuscarInput").value.trim();
+      const res = document.getElementById("rrResultados");
+      if (!criterio) { res.innerHTML = ""; return; }
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Buscando…</p>`;
+      try {
+        let lista = [];
+        if (tipo === "Alumno") {
+          const limpio = criterio.replace(/[,()%*]/g, " ").trim();
+          const { data, error } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula")
+            .eq("activo", true)
+            .or(`nombres.ilike.%${limpio}%,apellido_paterno.ilike.%${limpio}%,apellido_materno.ilike.%${limpio}%,matricula.ilike.%${limpio}%`)
+            .order("apellido_paterno")
+            .limit(20);
+          if (error) throw error;
+          lista = (data || []).map(a => ({ tipo: "Alumno", alumno_id: a.id, perfil_id: null, nombre: nombreAlumno(a), detalle: a.matricula }));
+        } else {
+          const personal = await cargarPersonalAcceso(true);
+          const q = normalizarTexto(criterio);
+          lista = personal.filter(p => p.activo && normalizarTexto(p.nombre_completo).includes(q))
+            .slice(0, 20).map(p => ({ tipo: "Personal", alumno_id: null, perfil_id: p.id, nombre: p.nombre_completo, detalle: p.rol }));
         }
+        res.innerHTML = lista.length === 0
+          ? `<p class="text-xs" style="color:#6C7B8A">Sin resultados.</p>`
+          : lista.map((p, i) => `
+              <button class="rrSel w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-idx="${i}" style="border-color:#E1DED5; color:#1E3A8A">
+                ${escHtml(p.nombre)} <span class="text-xs" style="color:#6C7B8A">(${escHtml(p.detalle || "")})</span>
+              </button>`).join("");
+        res.querySelectorAll(".rrSel").forEach(b => b.addEventListener("click", () => abrirPanel(lista[Number(b.dataset.idx)])));
+      } catch (e) {
+        res.innerHTML = errBox(escHtml(e.message));
       }
+    }
 
-      document.getElementById("gfImprimirBtn").addEventListener("click", () => window.print());
+    async function abrirPanel(persona) {
+      detenerCamara();
+      const panel = document.getElementById("rrPanel");
+      const esAlumno = persona.tipo === "Alumno";
+      const columna = esAlumno ? "alumno_id" : "perfil_id";
+      const idPersona = esAlumno ? persona.alumno_id : persona.perfil_id;
+      const clave = (esAlumno ? "A:" : "P:") + idPersona;
+
+      panel.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+      const { data: existente, error: errExist } = await sb.from("rostros").select("id, creado_en").eq(columna, idPersona).maybeSingle();
+      if (errExist) { panel.innerHTML = errBox(escHtml(errExist.message)); return; }
+
+      panel.innerHTML = `
+        <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(persona.nombre)}</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">${persona.tipo} · ${escHtml(persona.detalle || "")}</p>
+          <p class="text-xs mb-3" style="color:${existente ? "#3F7A5E" : "#B5453A"}">${existente ? "Rostro registrado el " + new Date(existente.creado_en).toLocaleDateString("es-MX") + ". Si capturas de nuevo, se reemplaza." : "Aún no tiene rostro registrado."}</p>
+
+          <label class="flex items-start gap-2 text-xs mb-3" style="color:#1E3A8A">
+            <input type="checkbox" id="rrConsentimiento" class="mt-0.5" />
+            <span>${esAlumno
+              ? "Confirmo que el padre, madre o tutor de este alumno otorgó su consentimiento expreso y por escrito para el tratamiento de sus datos biométricos (rasgos faciales)."
+              : "Confirmo que esta persona otorgó su consentimiento expreso y por escrito para el tratamiento de sus datos biométricos (rasgos faciales)."}</span>
+          </label>
+
+          <video id="rrVideo" class="w-full rounded-lg bg-black mb-2" style="max-height:260px; object-fit:cover; transform:scaleX(-1)" playsinline muted></video>
+          <p id="rrEstado" class="text-xs mb-2" style="color:#6C7B8A">La cámara está apagada.</p>
+          <div id="rrMsg"></div>
+          <div class="flex gap-2">
+            <button id="rrCamBtn" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Activar cámara</button>
+            <button id="rrCapturarBtn" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff; opacity:0.5" disabled>Capturar rostro</button>
+          </div>
+          ${existente ? `<button id="rrEliminarBtn" class="w-full mt-2 py-2 rounded-lg text-sm font-semibold" style="background:#F5E4E1; color:#B5453A">Eliminar rostro registrado</button>` : ""}
+        </div>`;
+
+      const chk = document.getElementById("rrConsentimiento");
+      const btnCam = document.getElementById("rrCamBtn");
+      const btnCap = document.getElementById("rrCapturarBtn");
+      const estado = document.getElementById("rrEstado");
+      const msg = document.getElementById("rrMsg");
+      let ocupado = false;
+
+      function actualizarBotonCaptura() {
+        const puede = chk.checked && !!camStream && !ocupado;
+        btnCap.disabled = !puede;
+        btnCap.style.opacity = puede ? "1" : "0.5";
+      }
+      chk.addEventListener("change", actualizarBotonCaptura);
+
+      btnCam.addEventListener("click", async () => {
+        msg.innerHTML = "";
+        btnCam.disabled = true;
+        try {
+          estado.textContent = "Cargando reconocimiento facial (la primera vez puede tardar)…";
+          await cargarReconocimientoFacial();
+          await iniciarCamara(document.getElementById("rrVideo"));
+          estado.textContent = "Cámara lista. Marca el consentimiento y pulsa \"Capturar rostro\".";
+          btnCam.style.display = "none";
+        } catch (e) {
+          detenerCamara();
+          estado.textContent = "La cámara está apagada.";
+          msg.innerHTML = errBox(escHtml(e.message));
+          btnCam.disabled = false;
+        }
+        actualizarBotonCaptura();
+      });
+
+      btnCap.addEventListener("click", async () => {
+        msg.innerHTML = "";
+        ocupado = true;
+        actualizarBotonCaptura();
+        try {
+          const muestras = await capturarMuestras(document.getElementById("rrVideo"), estado, FACE_MUESTRAS_REGISTRO);
+
+          // Revisa que ese rostro no esté ya registrado a nombre de otra persona.
+          estado.textContent = "Verificando que no esté duplicado…";
+          const personas = await cargarRostros();
+          const otras = personas.filter(p => p.clave !== clave);
+          const matcher = crearMatcher(otras);
+          if (matcher) {
+            const mejor = matcher.findBestMatch(muestras[0]);
+            if (mejor.label !== "unknown") {
+              const otra = otras.find(p => p.clave === mejor.label);
+              if (!confirm(`Este rostro se parece mucho al de ${otra ? otra.nombre : "otra persona"}. ¿Guardar de todas formas?`)) {
+                estado.textContent = "Captura cancelada.";
+                ocupado = false;
+                actualizarBotonCaptura();
+                return;
+              }
+            }
+          }
+
+          estado.textContent = "Guardando…";
+          const { error: errDel } = await sb.from("rostros").delete().eq(columna, idPersona);
+          if (errDel) throw errDel;
+          const { error: errIns } = await sb.from("rostros").insert({
+            tipo_persona: persona.tipo,
+            alumno_id: esAlumno ? idPersona : null,
+            perfil_id: esAlumno ? null : idPersona,
+            descriptores: muestras.map(d => Array.from(d).map(x => Number(x.toFixed(4)))),
+            consentimiento: true,
+            registrado_por: state.perfil.id,
+          });
+          if (errIns) throw errIns;
+
+          detenerCamara();
+          abrirPanel(persona);
+          const nuevoMsg = document.getElementById("rrMsg");
+          if (nuevoMsg) nuevoMsg.innerHTML = okBox("Rostro registrado correctamente.");
+        } catch (e) {
+          msg.innerHTML = errBox(escHtml(e.message));
+          estado.textContent = "Cámara lista.";
+          ocupado = false;
+          actualizarBotonCaptura();
+        }
+      });
+
+      const btnEliminar = document.getElementById("rrEliminarBtn");
+      if (btnEliminar) btnEliminar.addEventListener("click", async () => {
+        if (!confirm(`¿Eliminar el rostro registrado de ${persona.nombre}? Ya no podrá registrarse con la cámara.`)) return;
+        const { error } = await sb.from("rostros").delete().eq(columna, idPersona);
+        if (error) { msg.innerHTML = errBox(escHtml(error.message)); return; }
+        detenerCamara();
+        abrirPanel(persona);
+      });
     }
   }
+}
+
+// Toma varias muestras del rostro (una sola persona, de frente y suficientemente cerca).
+async function capturarMuestras(video, estadoEl, cantidad) {
+  const muestras = [];
+  let intentos = 0;
+  while (muestras.length < cantidad && intentos < 80) {
+    if (!camStream) throw new Error("La cámara se detuvo.");
+    intentos++;
+    const dets = await faceapi.detectAllFaces(video, opcionesDetector()).withFaceLandmarks().withFaceDescriptors();
+    if (dets.length === 1 && dets[0].detection.score >= 0.7 && dets[0].detection.box.width / video.videoWidth >= 0.25) {
+      muestras.push(dets[0].descriptor);
+      estadoEl.textContent = `Muestra ${muestras.length} de ${cantidad}… mantén la mirada al frente.`;
+      await esperar(500);
+    } else {
+      estadoEl.textContent = dets.length > 1 ? "Debe aparecer solo una persona en la cámara." : "Acerca el rostro y mira de frente a la cámara…";
+      await esperar(250);
+    }
+  }
+  if (muestras.length < cantidad) throw new Error("No se logró capturar el rostro. Intenta de nuevo con mejor luz y mirando de frente.");
+  return muestras;
 }
 
 // ============================================================
@@ -1746,11 +2199,11 @@ async function renderAvisoPrivacidad(main) {
           <div class="text-xs space-y-3" style="color:#1E3A8A">
             <p>${val("nombre_oficial", "Nombre oficial del instituto pendiente")} (en adelante "el Instituto"), con domicilio en ${val("domicilio", "domicilio pendiente")}, es responsable del tratamiento de los datos personales que se recaben de sus alumnos, así como de los padres, madres o tutores legales que los representan, de conformidad con lo dispuesto por la Ley Federal de Protección de Datos Personales en Posesión de los Particulares y su Reglamento.</p>
 
-            <p><strong>Datos personales que se recaban.</strong> Datos de identificación del alumno (nombre, CURP, fecha de nacimiento, sexo, matrícula), datos de contacto de los padres, madres o tutores (nombre, parentesco, teléfono, correo electrónico, domicilio), información académica (calificaciones, asistencia, grupo y nivel escolar), información relacionada con el pago de colegiaturas y demás cuotas escolares cuando aplique, así como el código de identificación (QR) utilizado para la elaboración de credenciales y el control de acceso a las instalaciones.</p>
+            <p><strong>Datos personales que se recaban.</strong> Datos de identificación del alumno (nombre, CURP, fecha de nacimiento, sexo, matrícula), datos de contacto de los padres, madres o tutores (nombre, parentesco, teléfono, correo electrónico, domicilio), información académica (calificaciones, asistencia, grupo y nivel escolar), información relacionada con el pago de colegiaturas y demás cuotas escolares cuando aplique, así como, únicamente cuando el padre, madre o tutor lo autorice por escrito, datos biométricos (representación numérica de los rasgos faciales) utilizados para registrar la entrada y salida de las instalaciones. No se almacena fotografía del rostro con esta finalidad.</p>
 
             <p>Dado que la mayoría de los alumnos son menores de edad, sus datos personales son proporcionados y su tratamiento consentido por sus padres, madres o tutores legales.</p>
 
-            <p><strong>Finalidades del tratamiento.</strong> Los datos se utilizan para: la inscripción y control administrativo y escolar del alumno; la evaluación académica; la comunicación con padres, madres o tutores; el control de asistencia y acceso a las instalaciones; la elaboración de credenciales de identificación; la expedición de constancias, certificados y demás documentos oficiales; y, cuando aplique, el cobro de colegiaturas y demás cuotas escolares.</p>
+            <p><strong>Finalidades del tratamiento.</strong> Los datos se utilizan para: la inscripción y control administrativo y escolar del alumno; la evaluación académica; la comunicación con padres, madres o tutores; el control de asistencia y de entradas y salidas de las instalaciones mediante reconocimiento facial (el cual requiere consentimiento expreso y por escrito, puede revocarse en cualquier momento y cuenta con un registro manual alternativo para quien no lo otorgue); la expedición de constancias, certificados y demás documentos oficiales; y, cuando aplique, el cobro de colegiaturas y demás cuotas escolares.</p>
 
             <p>De manera adicional, los datos de contacto podrán utilizarse para el envío de comunicados, avisos y circulares relacionados con la vida escolar del alumno. Si usted no desea que sus datos se utilicen para esta finalidad secundaria, puede manifestarlo a través de los medios de contacto señalados en este aviso.</p>
 
@@ -1981,22 +2434,12 @@ function renderCalificaciones(main) {
 }
 
 // ============================================================
-// Módulo Asistencia (por materia asignada, con escaneo QR)
+// Módulo Asistencia (por materia asignada, lista manual)
 // ============================================================
-let asiStreamActivo = null;
-
-function detenerCamaraAsistencia() {
-  if (asiStreamActivo) {
-    asiStreamActivo.getTracks().forEach(t => t.stop());
-    asiStreamActivo = null;
-  }
-}
-
 function renderAsistencia(main) {
-  detenerCamaraAsistencia();
   main.innerHTML = `
     <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Asistencia</h2>
-    <div class="max-w-sm">
+    <div class="max-w-md">
       <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Selecciona tu clase</label>
       <select id="asiClaseSel" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5">
         <option value="">Cargando…</option>
@@ -2023,7 +2466,6 @@ function renderAsistencia(main) {
       <option value="${c.id}">${c.materias.nombre} — ${c.grupos.grados.nombre} "${c.grupos.letra}" (${c.grupos.grados.nivel})</option>
     `).join("");
     sel.addEventListener("change", () => {
-      detenerCamaraAsistencia();
       const clase = clases.find(c => c.id === sel.value);
       if (clase) iniciarPaseLista(clase); else document.getElementById("asiContenido").innerHTML = "";
     });
@@ -2031,102 +2473,77 @@ function renderAsistencia(main) {
 
   async function iniciarPaseLista(clase) {
     const cont = document.getElementById("asiContenido");
-    const hoy = new Date().toISOString().slice(0, 10);
+    const d = new Date();
+    const hoy = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando lista…</p>`;
+
+    const [inscRes, asisRes] = await Promise.all([
+      sb.from("inscripciones").select("alumno_id, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula)")
+        .eq("grupo_id", clase.grupo_id).eq("ciclo_escolar_id", clase.ciclo_escolar_id).eq("estado", "Inscrito"),
+      sb.from("asistencia_clase").select("alumno_id").eq("asignacion_id", clase.id).eq("fecha", hoy),
+    ]);
+    if (inscRes.error || asisRes.error) { cont.innerHTML = errBox(((inscRes.error || asisRes.error).message)); return; }
+
+    const alumnos = (inscRes.data || []).map(i => i.alumnos).filter(Boolean)
+      .sort((a, b) => (a.apellido_paterno + a.apellido_materno + a.nombres).localeCompare(b.apellido_paterno + b.apellido_materno + b.nombres, "es"));
+    const yaPresentes = new Set((asisRes.data || []).map(r => r.alumno_id));
+
+    if (alumnos.length === 0) { cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Este grupo no tiene alumnos inscritos.</p>`; return; }
 
     cont.innerHTML = `
-      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-        <p class="text-xs mb-2" style="color:#6C7B8A">Pase de lista de hoy (${hoy})</p>
-        <video id="asiVideo" class="w-full rounded-lg bg-black" style="max-height:240px; object-fit:cover" playsinline muted></video>
-        <canvas id="asiCanvas" style="display:none"></canvas>
-        <button id="asiIniciarBtn" class="w-full mt-2 py-2 rounded-lg text-sm font-semibold" style="background:#1E3A8A; color:#fff">Activar cámara</button>
-        <p id="asiCamMsg" class="text-xs mt-2" style="color:#B5453A"></p>
-        <div id="asiResultado" class="mt-2"></div>
-      </div>
       <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
-        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Ya registrados hoy (<span id="asiConteo">0</span>)</p>
-        <div id="asiListaHoy"></div>
+        <div class="flex justify-between items-center mb-2">
+          <p class="text-xs" style="color:#6C7B8A">Pase de lista de hoy (${hoy})</p>
+          <button id="asiTodosBtn" class="text-xs font-semibold px-2 py-1 rounded-lg" style="background:#F4F1EB; color:#1E3A8A">Marcar todos</button>
+        </div>
+        <div id="asiLista">
+          ${alumnos.map(a => `
+            <label class="flex items-center gap-3 py-2 border-b" style="border-color:#F0EDE5; color:#1C2B3A">
+              <input type="checkbox" class="asiChk" data-id="${a.id}" ${yaPresentes.has(a.id) ? "checked" : ""} style="width:20px;height:20px" />
+              <span class="text-sm">${a.apellido_paterno} ${a.apellido_materno || ""} ${a.nombres} <span class="text-xs" style="color:#6C7B8A">(${a.matricula})</span></span>
+            </label>`).join("")}
+        </div>
+        <div id="asiMsg" class="mt-3"></div>
+        <button id="asiGuardarBtn" class="w-full py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar asistencia</button>
       </div>`;
 
-    document.getElementById("asiIniciarBtn").addEventListener("click", iniciarCamara);
-    cargarListaHoy();
+    document.getElementById("asiTodosBtn").addEventListener("click", () => {
+      const chks = [...document.querySelectorAll(".asiChk")];
+      const marcar = chks.some(c => !c.checked);
+      chks.forEach(c => { c.checked = marcar; });
+    });
 
-    async function iniciarCamara() {
-      const msg = document.getElementById("asiCamMsg");
-      msg.textContent = "";
+    document.getElementById("asiGuardarBtn").addEventListener("click", async () => {
+      const msg = document.getElementById("asiMsg");
+      const btn = document.getElementById("asiGuardarBtn");
+      msg.innerHTML = "";
+      btn.disabled = true;
+      const marcados = new Set([...document.querySelectorAll(".asiChk:checked")].map(c => c.dataset.id));
+      const nuevos = [...marcados].filter(id => !yaPresentes.has(id));
+      const quitados = [...yaPresentes].filter(id => !marcados.has(id));
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        asiStreamActivo = stream;
-        const video = document.getElementById("asiVideo");
-        video.srcObject = stream;
-        await video.play();
-        requestAnimationFrame(escanearCuadro);
-      } catch (err) {
-        msg.textContent = "No se pudo activar la cámara: " + err.message;
-      }
-    }
-
-    function escanearCuadro() {
-      if (!asiStreamActivo) return;
-      const video = document.getElementById("asiVideo");
-      const canvas = document.getElementById("asiCanvas");
-      if (!video) return;
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const codigo = jsQR(imageData.data, imageData.width, imageData.height);
-        if (codigo && codigo.data) {
-          procesarToken(codigo.data);
-          return;
+        if (nuevos.length) {
+          const { error } = await sb.from("asistencia_clase").insert(
+            nuevos.map(id => ({ asignacion_id: clase.id, alumno_id: id, fecha: hoy, registrado_por: state.perfil.id }))
+          );
+          if (error && error.code !== "23505") throw error;
         }
-      }
-      requestAnimationFrame(escanearCuadro);
-    }
-
-    async function procesarToken(token) {
-      const resCont = document.getElementById("asiResultado");
-      const { data: alumno } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula").eq("qr_token", token).maybeSingle();
-
-      if (!alumno) {
-        resCont.innerHTML = errBox("Código QR no reconocido como alumno.");
-        requestAnimationFrame(escanearCuadro);
-        return;
-      }
-
-      const { error } = await sb.from("asistencia_clase").insert({
-        asignacion_id: clase.id, alumno_id: alumno.id, fecha: hoy, registrado_por: state.perfil.id,
-      });
-
-      if (error) {
-        if (error.code === "23505") {
-          resCont.innerHTML = okBox(`${alumno.nombres} ${alumno.apellido_paterno} ya estaba registrado hoy.`);
-        } else {
-          resCont.innerHTML = errBox(error.message);
+        if (quitados.length) {
+          const { error } = await sb.from("asistencia_clase").delete()
+            .eq("asignacion_id", clase.id).eq("fecha", hoy).in("alumno_id", quitados);
+          if (error) throw error;
         }
-      } else {
-        resCont.innerHTML = okBox(`✓ Asistencia registrada: ${alumno.nombres} ${alumno.apellido_paterno}`);
-        cargarListaHoy();
+        yaPresentes.clear();
+        marcados.forEach(id => yaPresentes.add(id));
+        msg.innerHTML = okBox(`Asistencia guardada: ${marcados.size} presentes de ${alumnos.length}.`);
+      } catch (e) {
+        msg.innerHTML = errBox("No se pudo guardar: " + e.message);
       }
-      requestAnimationFrame(escanearCuadro);
-    }
-
-    async function cargarListaHoy() {
-      const { data } = await sb
-        .from("asistencia_clase")
-        .select("hora, alumnos(nombres, apellido_paterno, apellido_materno, matricula)")
-        .eq("asignacion_id", clase.id)
-        .eq("fecha", hoy)
-        .order("hora");
-      const lista = data || [];
-      document.getElementById("asiConteo").textContent = lista.length;
-      document.getElementById("asiListaHoy").innerHTML = lista.length === 0
-        ? `<p class="text-xs" style="color:#6C7B8A">Nadie registrado todavía.</p>`
-        : lista.map(r => `<div class="text-sm py-1" style="color:#1C2B3A">${r.alumnos.nombres} ${r.alumnos.apellido_paterno} ${r.alumnos.apellido_materno || ""} <span class="text-xs" style="color:#6C7B8A">(${r.alumnos.matricula}) — ${new Date(r.hora).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</span></div>`).join("");
-    }
+      btn.disabled = false;
+    });
   }
 }
+
 
 init();
 </script>
