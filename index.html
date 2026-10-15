@@ -57,14 +57,16 @@ const MENU = [
   { id: "inicio", label: "Inicio", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
-  { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Profesor"], construido: true },
+  { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: true },
   { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
-  { id: "avisos", label: "Disciplina y Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: false },
+  { id: "disciplina", label: "Disciplina", roles: ["Administrador", "Director", "Secretaria"], construido: true },
+  { id: "avisos", label: "Avisos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "mobiliario", label: "Inventario/Mobiliario", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "accesos", label: "Entradas y Salidas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
+  { id: "boletas", label: "Boletas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "bitacora", label: "Bitácora", roles: ["Administrador", "Director"], construido: true },
   { id: "usuarios", label: "Usuarios del Sistema", roles: ["Administrador"], construido: false },
 ];
@@ -407,6 +409,9 @@ function renderSeccion() {
   if (state.seccion === "calificaciones") return renderCalificaciones(main);
   if (state.seccion === "asistencia") return renderAsistencia(main);
   if (state.seccion === "bitacora") return renderBitacora(main);
+  if (state.seccion === "boletas") return renderBoletas(main);
+  if (state.seccion === "disciplina") return renderDisciplina(main);
+  if (state.seccion === "avisos") return renderAvisos(main);
 
   const modulo = MENU.find(m => m.id === state.seccion);
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
@@ -984,14 +989,17 @@ function renderAlumnos(main) {
       wrap.innerHTML = `<p class="text-xs mt-2" style="color:#6C7B8A">Cargando…</p>`;
 
       let tutorExistente = null;
+      let tutor2Existente = null;
       let inscripcionExistente = null;
 
       if (esEdicion) {
         const [tutorRes, inscRes] = await Promise.all([
-          sb.from("alumno_tutores").select("tutor_id, tutores(*)").eq("alumno_id", alumnoExistente.id).order("es_contacto_principal", { ascending: false }).limit(1).maybeSingle(),
+          sb.from("alumno_tutores").select("tutor_id, es_contacto_principal, tutores(*)").eq("alumno_id", alumnoExistente.id).order("es_contacto_principal", { ascending: false }),
           sb.from("inscripciones").select("*, grupos(letra, grado_id, grados(nivel))").eq("alumno_id", alumnoExistente.id).order("fecha_inscripcion", { ascending: false }).limit(1).maybeSingle(),
         ]);
-        tutorExistente = tutorRes.data?.tutores || null;
+        const listaTut = (tutorRes.data || []).map(t => t.tutores).filter(Boolean);
+        tutorExistente = listaTut[0] || null;
+        tutor2Existente = listaTut[1] || null;
         inscripcionExistente = inscRes.data || null;
       }
 
@@ -1020,15 +1028,28 @@ function renderAlumnos(main) {
             </select>
           </div>
 
-          <p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Tutor / padre de familia</p>
+          <p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Padre, madre o tutor (contacto principal) *</p>
           <div class="grid grid-cols-2 gap-2 mb-2">
-            <input id="naTutorNombre" placeholder="Nombre completo del tutor" value="${tutorExistente?.nombre_completo || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naTutorParentesco" placeholder="Parentesco (Madre, Padre…)" value="${tutorExistente?.parentesco || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorNombre" placeholder="Nombre completo *" value="${escHtml(tutorExistente?.nombre_completo || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorParentesco" placeholder="Parentesco (Madre, Padre…) *" value="${escHtml(tutorExistente?.parentesco || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
           </div>
-          <div class="grid grid-cols-2 gap-2 mb-3">
-            <input id="naTutorTelefono" placeholder="Teléfono" value="${tutorExistente?.telefono || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <input id="naTutorCorreo" placeholder="Correo (opcional)" value="${tutorExistente?.correo || ""}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <input id="naTutorTelefono" type="tel" inputmode="numeric" placeholder="Celular / WhatsApp (10 dígitos) *" value="${escHtml(tutorExistente?.telefono || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="naTutorCorreo" placeholder="Correo (opcional)" value="${escHtml(tutorExistente?.correo || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
           </div>
+          <input id="naTutorDireccion" placeholder="Domicilio (opcional)" value="${escHtml(tutorExistente?.direccion || "")}" class="w-full px-2 py-1.5 rounded-lg text-sm outline-none border mb-2" style="border-color:#E1DED5" />
+
+          <details class="mb-3" ${tutor2Existente ? "open" : ""}>
+            <summary class="text-xs font-semibold cursor-pointer" style="color:#1E3A8A">Segundo tutor (opcional)</summary>
+            <div class="grid grid-cols-2 gap-2 my-2">
+              <input id="naTutor2Nombre" placeholder="Nombre completo" value="${escHtml(tutor2Existente?.nombre_completo || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+              <input id="naTutor2Parentesco" placeholder="Parentesco" value="${escHtml(tutor2Existente?.parentesco || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="naTutor2Telefono" type="tel" inputmode="numeric" placeholder="Celular / WhatsApp (10 dígitos)" value="${escHtml(tutor2Existente?.telefono || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+              <input id="naTutor2Correo" placeholder="Correo (opcional)" value="${escHtml(tutor2Existente?.correo || "")}" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            </div>
+          </details>
 
           <p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Inscripción</p>
           <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
@@ -1063,6 +1084,10 @@ function renderAlumnos(main) {
 
       document.getElementById("naGuardar").addEventListener("click", async () => {
         const msg = document.getElementById("naMsg");
+        const btnG = document.getElementById("naGuardar");
+        if (btnG.dataset.busy === "1") return;   // evita guardar dos veces por doble toque
+        btnG.dataset.busy = "1";
+        setTimeout(() => { delete btnG.dataset.busy; }, 3000);
         msg.innerHTML = "";
         const nombres = document.getElementById("naNombres").value.trim();
         const apPat = document.getElementById("naApPat").value.trim();
@@ -1074,10 +1099,24 @@ function renderAlumnos(main) {
           return;
         }
 
-        const correoTutor = document.getElementById("naTutorCorreo").value.trim();
-        if (correoTutor && !validarCorreo(correoTutor)) {
-          msg.innerHTML = errBox("El correo del tutor no tiene un formato válido.");
-          return;
+        const leerTutor = pref => ({
+          nombre_completo: document.getElementById(`na${pref}Nombre`).value.trim(),
+          parentesco: document.getElementById(`na${pref}Parentesco`).value.trim(),
+          telefono: document.getElementById(`na${pref}Telefono`).value.replace(/\D/g, ""),
+          correo: document.getElementById(`na${pref}Correo`).value.trim(),
+        });
+        const t1 = leerTutor("Tutor");
+        t1.direccion = document.getElementById("naTutorDireccion").value.trim();
+        const t2 = leerTutor("Tutor2");
+        const t2Capturado = !!(t2.nombre_completo || t2.parentesco || t2.telefono || t2.correo);
+
+        if (!t1.nombre_completo || !t1.parentesco) { msg.innerHTML = errBox("Captura el nombre y el parentesco del padre, madre o tutor."); return; }
+        if (t1.telefono.length !== 10) { msg.innerHTML = errBox("El celular del tutor debe tener 10 dígitos (es el que se usa para WhatsApp)."); return; }
+        if (t1.correo && !validarCorreo(t1.correo)) { msg.innerHTML = errBox("El correo del tutor no tiene un formato válido."); return; }
+        if (t2Capturado) {
+          if (!t2.nombre_completo) { msg.innerHTML = errBox("Captura el nombre del segundo tutor o borra sus datos."); return; }
+          if (t2.telefono && t2.telefono.length !== 10) { msg.innerHTML = errBox("El celular del segundo tutor debe tener 10 dígitos."); return; }
+          if (t2.correo && !validarCorreo(t2.correo)) { msg.innerHTML = errBox("El correo del segundo tutor no tiene un formato válido."); return; }
         }
 
         const datosAlumno = {
@@ -1101,22 +1140,26 @@ function renderAlumnos(main) {
           alumnoId = alumnoData.id;
         }
 
-        const tutorNombre = document.getElementById("naTutorNombre").value.trim();
-        if (tutorNombre) {
-          const datosTutor = {
-            nombre_completo: tutorNombre,
-            parentesco: document.getElementById("naTutorParentesco").value.trim() || null,
-            telefono: document.getElementById("naTutorTelefono").value.trim() || null,
-            correo: document.getElementById("naTutorCorreo").value.trim() || null,
+        // Guarda (o actualiza) cada tutor y lo liga al alumno. El primero queda como contacto principal.
+        async function guardarTutor(datos, existente, principal) {
+          const fila = {
+            nombre_completo: datos.nombre_completo, parentesco: datos.parentesco || null,
+            telefono: datos.telefono || null, correo: datos.correo || null, direccion: datos.direccion || null,
           };
-          if (esEdicion && tutorExistente) {
-            await sb.from("tutores").update(datosTutor).eq("id", tutorExistente.id);
-          } else {
-            const { data: tutorData, error: tutorError } = await sb.from("tutores").insert(datosTutor).select().single();
-            if (!tutorError && tutorData) {
-              await sb.from("alumno_tutores").insert({ alumno_id: alumnoId, tutor_id: tutorData.id, es_contacto_principal: true });
-            }
+          if (existente) {
+            const { error: eU } = await sb.from("tutores").update(fila).eq("id", existente.id);
+            return eU;
           }
+          const { data: tNuevo, error: eT } = await sb.from("tutores").insert(fila).select().single();
+          if (eT) return eT;
+          const { error: eR } = await sb.from("alumno_tutores").insert({ alumno_id: alumnoId, tutor_id: tNuevo.id, es_contacto_principal: principal });
+          return eR;
+        }
+        const errT1 = await guardarTutor(t1, tutorExistente, true);
+        if (errT1) { msg.innerHTML = errBox("El alumno se guardó, pero no se pudieron guardar los datos del tutor: " + escHtml(errT1.message)); return; }
+        if (t2Capturado) {
+          const errT2 = await guardarTutor(t2, tutor2Existente, false);
+          if (errT2) { msg.innerHTML = errBox("No se pudo guardar el segundo tutor: " + escHtml(errT2.message)); return; }
         }
 
         const grupoSel = document.getElementById("naGrupoSel");
@@ -2267,7 +2310,7 @@ function renderCalificaciones(main) {
     </div>`;
 
   cargarAsignaciones();
-  if (esAdmin || state.perfil.rol === "Director") cargarSolicitudes();
+  if (["Administrador", "Director", "Secretaria"].includes(state.perfil.rol)) cargarSolicitudes();
 
   async function cargarSolicitudes() {
     const caja = document.getElementById("calSolicitudes");
@@ -2275,7 +2318,7 @@ function renderCalificaciones(main) {
       .select("id, asignacion_id, periodo, motivo, creado_en, solicitado_por, profesor_materias_grupos(materias(nombre), grupos(letra, grados(nombre)))")
       .eq("estado", "Pendiente").order("creado_en");
     if (error || !data || data.length === 0) { caja.innerHTML = ""; return; }
-    const { data: perfs } = await sb.from("perfiles").select("id, nombre_completo").in("id", [...new Set(data.map(d => d.solicitado_por))]);
+    const { data: perfs } = await sb.rpc("personal_para_acceso");
     const nombres = new Map((perfs || []).map(p => [p.id, p.nombre_completo]));
     caja.innerHTML = `
       <div class="p-4 rounded-xl border mb-4" style="background:#FFF8E6; border-color:#E8D49A">
@@ -2301,8 +2344,8 @@ function renderCalificaciones(main) {
       }).eq("id", s.id);
       if (e1) { document.getElementById("solMsg").innerHTML = errBox(escHtml(e1.message)); return; }
       if (autorizar) {
-        const { error: e2 } = await sb.from("periodos_criterios").upsert(
-          { asignacion_id: s.asignacion_id, periodo: s.periodo, estado: "Autorizado" }, { onConflict: "asignacion_id,periodo" });
+        const { error: e2 } = await sb.from("periodos_criterios").update({ estado: "Autorizado" })
+          .eq("asignacion_id", s.asignacion_id).eq("periodo", s.periodo);
         if (e2) { document.getElementById("solMsg").innerHTML = errBox(escHtml(e2.message)); return; }
       }
       cargarSolicitudes();
@@ -2323,7 +2366,7 @@ function renderCalificaciones(main) {
       return;
     }
     sel.innerHTML = `<option value="">Selecciona…</option>` + asignaciones.map(a => `
-      <option value="${a.id}">${a.materias.nombre} — ${a.grupos.grados.nombre} "${a.grupos.letra}" (${a.grupos.grados.nivel}) — ${a.ciclos_escolares.nombre}${esAdmin ? " — " + (a.perfiles?.nombre_completo || "") : ""}</option>
+      <option value="${a.id}">${a.materias.nombre} — ${a.grupos.grados.nombre} "${a.grupos.letra}" (${a.grupos.grados.nivel}) — ${a.ciclos_escolares.nombre}${!esProfesor ? " — " + (a.perfiles?.nombre_completo || "") : ""}</option>
     `).join("");
     sel.addEventListener("change", () => {
       const asignacion = asignaciones.find(a => a.id === sel.value);
@@ -2335,7 +2378,8 @@ function renderCalificaciones(main) {
     const cont = document.getElementById("calContenido");
     cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
 
-    const puedeEditar = esAdmin || (esProfesor && asignacion.profesor_id === state.perfil.id);
+    // Solo quien imparte la clase captura criterios y calificaciones; los demás roles solo consultan.
+    const puedeEditar = asignacion.profesor_id === state.perfil.id;
 
     const [criteriosRes, alumnosRes] = await Promise.all([
       sb.from("criterios_evaluacion").select("*").eq("asignacion_id", asignacion.id).order("periodo").order("orden"),
@@ -2389,10 +2433,11 @@ function renderCalificaciones(main) {
       const criteriosPeriodo = criterios.filter(c => c.periodo === periodoActivo);
       const sumaPonderacion = criteriosPeriodo.reduce((s, c) => s + Number(c.ponderacion), 0);
       const confirmado = estadosPeriodo[periodoActivo] === "Confirmado";
-      const puedeEditarCriterios = puedeEditar && (esAdmin || !confirmado);
-      const puedeCapturar = puedeEditar && (esAdmin || confirmado);
+      const puedeEditarCriterios = puedeEditar && !confirmado;
+      const puedeCapturar = puedeEditar && confirmado;
 
       cont.innerHTML = `
+        ${!puedeEditar ? `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#EEF2FB; color:#1E3A8A">Solo consulta: los criterios y las calificaciones los captura el profesor de la clase.${confirmado ? "" : " Los criterios de este periodo aún no están confirmados."}</div>` : ""}
         <div class="flex gap-1 mb-3 flex-wrap">
           ${periodos.map(p => `<button class="calPeriodoBtn px-3 py-1.5 rounded-lg text-xs font-semibold" data-p="${p}" style="background:${p === periodoActivo ? "#1E3A8A" : "#F4F1EB"}; color:${p === periodoActivo ? "#fff" : "#1E3A8A"}">${p}</button>`).join("")}
         </div>
@@ -2411,9 +2456,9 @@ function renderCalificaciones(main) {
             <button id="calAgregarCriterioBtn" class="px-2 py-1.5 rounded-lg text-xs font-semibold" style="background:#1E3A8A; color:#fff">+</button>
           </div>
           <div id="calCriterioMsg" class="mt-1"></div>
-          ${esProfesor && criteriosPeriodo.length > 0 ? `
+          ${puedeEditar && criteriosPeriodo.length > 0 ? `
           <button id="calConfirmarBtn" class="mt-2 px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Confirmar criterios</button>
-          <p class="text-xs mt-1" style="color:#6C7B8A">Debes confirmar los criterios (suma 100%) para capturar calificaciones. Después solo se pueden cambiar con autorización de un supervisor.</p>` : ""}` : (esProfesor && puedeEditar ? `
+          <p class="text-xs mt-1" style="color:#6C7B8A">Debes confirmar los criterios (suma 100%) para capturar calificaciones. Después solo se pueden cambiar con autorización de un supervisor.</p>` : ""}` : (puedeEditar ? `
           <div class="mt-2 p-2 rounded-lg text-xs" style="background:#F4F1EB; color:#1E3A8A">
             🔒 Criterios confirmados.
             ${solicitudesPend.has(periodoActivo) ? "Hay una solicitud de modificación pendiente de autorización." : `<button id="calSolicitarBtn" class="ml-1 px-2 py-1 rounded-lg font-semibold" style="background:#1E3A8A; color:#fff">Solicitar modificación</button>`}
@@ -2639,6 +2684,801 @@ function renderBitacora(main) {
       const fila = document.getElementById("btDet_" + b.dataset.i);
       fila.style.display = fila.style.display === "none" ? "" : "none";
     }));
+  }
+}
+
+// ============================================================
+// Módulo Boletas de calificaciones (solo consulta e impresión)
+// ============================================================
+function renderBoletas(main) {
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Boletas de Calificaciones</h2>
+    <div class="max-w-3xl">
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <div class="flex gap-2">
+          <input id="boBuscarInput" placeholder="Buscar alumno por nombre o matrícula…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          <button id="boBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+        </div>
+        <div id="boResultados" class="mt-2"></div>
+      </div>
+      <div id="boBoleta"></div>
+    </div>`;
+
+  document.getElementById("boBuscarBtn").addEventListener("click", buscar);
+  document.getElementById("boBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+
+  async function buscar() {
+    const criterio = document.getElementById("boBuscarInput").value.trim().replace(/[,()%*]/g, " ").trim();
+    const res = document.getElementById("boResultados");
+    if (!criterio) { res.innerHTML = ""; return; }
+    res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Buscando…</p>`;
+    const { data, error } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula, curp")
+      .or(`nombres.ilike.%${criterio}%,apellido_paterno.ilike.%${criterio}%,apellido_materno.ilike.%${criterio}%,matricula.ilike.%${criterio}%`)
+      .order("apellido_paterno").limit(20);
+    if (error) { res.innerHTML = errBox(escHtml(error.message)); return; }
+    const lista = data || [];
+    res.innerHTML = lista.length === 0 ? `<p class="text-xs" style="color:#6C7B8A">Sin resultados.</p>` : lista.map((a, i) => `
+      <button class="boSel w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A">
+        ${escHtml(a.apellido_paterno + " " + (a.apellido_materno || "") + " " + a.nombres)} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})</span>
+      </button>`).join("");
+    res.querySelectorAll(".boSel").forEach(b => b.addEventListener("click", () => cargarAlumno(lista[Number(b.dataset.i)])));
+  }
+
+  async function cargarAlumno(alumno) {
+    const caja = document.getElementById("boBoleta");
+    caja.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data: insc, error } = await sb.from("inscripciones")
+      .select("grupo_id, ciclo_escolar_id, fecha_inscripcion, grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre)")
+      .eq("alumno_id", alumno.id).order("fecha_inscripcion", { ascending: false });
+    if (error) { caja.innerHTML = errBox(escHtml(error.message)); return; }
+    const inscripciones = (insc || []).filter(i => i.grupos && i.ciclos_escolares);
+    if (inscripciones.length === 0) { caja.innerHTML = errBox("Este alumno no tiene inscripción registrada."); return; }
+
+    caja.innerHTML = `
+      ${inscripciones.length > 1 ? `
+      <select id="boCicloSel" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+        ${inscripciones.map((i, k) => `<option value="${k}">${escHtml(i.ciclos_escolares.nombre)} — ${escHtml(i.grupos.grados.nombre)} "${escHtml(i.grupos.letra)}"</option>`).join("")}
+      </select>` : ""}
+      <div id="boContenido"></div>`;
+    const sel = document.getElementById("boCicloSel");
+    if (sel) sel.addEventListener("change", () => pintarBoleta(alumno, inscripciones[Number(sel.value)]));
+    pintarBoleta(alumno, inscripciones[0]);
+  }
+
+  async function pintarBoleta(alumno, insc) {
+    const cont = document.getElementById("boContenido");
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Generando boleta…</p>`;
+
+    const [asigRes, instRes] = await Promise.all([
+      sb.from("profesor_materias_grupos").select("id, materias(nombre)").eq("grupo_id", insc.grupo_id).eq("ciclo_escolar_id", insc.ciclo_escolar_id),
+      sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad").eq("id", 1).maybeSingle(),
+    ]);
+    if (asigRes.error) { cont.innerHTML = errBox(escHtml(asigRes.error.message)); return; }
+    const asignaciones = (asigRes.data || []).filter(a => a.materias);
+    const ids = asignaciones.map(a => a.id);
+
+    let criterios = [];
+    let califs = [];
+    if (ids.length > 0) {
+      const { data: crit, error: e1 } = await sb.from("criterios_evaluacion").select("id, asignacion_id, periodo, ponderacion").in("asignacion_id", ids);
+      if (e1) { cont.innerHTML = errBox(escHtml(e1.message)); return; }
+      criterios = crit || [];
+      if (criterios.length > 0) {
+        const { data: cal, error: e2 } = await sb.from("calificaciones").select("criterio_id, valor").eq("alumno_id", alumno.id).in("criterio_id", criterios.map(c => c.id));
+        if (e2) { cont.innerHTML = errBox(escHtml(e2.message)); return; }
+        califs = cal || [];
+      }
+    }
+
+    const nivel = insc.grupos.grados.nivel;
+    const prefijo = nivel === "Preparatoria" ? "Bimestre" : "Parcial";
+    const periodos = [1, 2, 3, 4, 5].map(n => `${prefijo} ${n}`);
+    const valores = new Map(califs.map(c => [c.criterio_id, Number(c.valor)]));
+
+    // Calificación del periodo = suma(valor × ponderación / 100). Solo se muestra si el periodo
+    // ya tiene capturada al menos una calificación de este alumno.
+    function calificacionPeriodo(asigId, periodo) {
+      const crits = criterios.filter(c => c.asignacion_id === asigId && c.periodo === periodo);
+      const conValor = crits.filter(c => valores.has(c.id));
+      if (conValor.length === 0) return null;
+      return crits.reduce((t, c) => t + (valores.has(c.id) ? valores.get(c.id) * Number(c.ponderacion) / 100 : 0), 0);
+    }
+
+    const filas = asignaciones.map(a => {
+      const notas = periodos.map(p => calificacionPeriodo(a.id, p));
+      const capturadas = notas.filter(n => n != null);
+      const promedio = capturadas.length ? capturadas.reduce((s, n) => s + n, 0) / capturadas.length : null;
+      return { materia: a.materias.nombre, notas, promedio };
+    }).sort((x, y) => x.materia.localeCompare(y.materia, "es"));
+
+    const conPromedio = filas.filter(f => f.promedio != null);
+    const general = conPromedio.length ? conPromedio.reduce((s, f) => s + f.promedio, 0) / conPromedio.length : null;
+    const fmt = n => n == null ? "—" : n.toFixed(1);
+    const inst = instRes.data || {};
+    const logo = document.getElementById("headerLogo")?.src || "";
+    const nombreAlumno = `${alumno.apellido_paterno} ${alumno.apellido_materno || ""} ${alumno.nombres}`.trim();
+
+    cont.innerHTML = `
+      <div id="ibBoletaImprimible" class="ib-imprimible p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px">
+        <div class="flex items-center gap-3 mb-3">
+          ${logo ? `<img src="${logo}" style="height:56px" alt="" />` : ""}
+          <div class="flex-1 text-center">
+            <div class="text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${escHtml(inst.nombre_oficial || "Instituto Juan Bosco")}</div>
+            <div class="text-xs" style="color:#6C7B8A">${escHtml(inst.domicilio || "")}${inst.ciudad ? ", " + escHtml(inst.ciudad) : ""}</div>
+          </div>
+        </div>
+        <h3 class="text-sm font-bold text-center mb-3" style="color:#1E3A8A">BOLETA DE CALIFICACIONES</h3>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-3" style="color:#1C2B3A">
+          <div><strong>Alumno:</strong> ${escHtml(nombreAlumno)}</div>
+          <div><strong>Matrícula:</strong> ${escHtml(alumno.matricula || "")}</div>
+          <div><strong>CURP:</strong> ${escHtml(alumno.curp || "")}</div>
+          <div><strong>Ciclo escolar:</strong> ${escHtml(insc.ciclos_escolares.nombre)}</div>
+          <div><strong>Nivel:</strong> ${escHtml(nivel)}</div>
+          <div><strong>Grado y grupo:</strong> ${escHtml(insc.grupos.grados.nombre)} "${escHtml(insc.grupos.letra)}"</div>
+        </div>
+        ${filas.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Este grupo no tiene materias asignadas todavía.</p>` : `
+        <table class="w-full text-xs" style="border-collapse:collapse; color:#1C2B3A">
+          <thead>
+            <tr style="background:#EEF2FB; color:#1E3A8A">
+              <th class="text-left p-2" style="border:1px solid #D5DAE8">Materia</th>
+              ${periodos.map(p => `<th class="p-2" style="border:1px solid #D5DAE8">${p.replace(prefijo + " ", prefijo.slice(0, 1) + "")}</th>`).join("")}
+              <th class="p-2" style="border:1px solid #D5DAE8">Promedio</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filas.map(f => `
+              <tr>
+                <td class="p-2" style="border:1px solid #D5DAE8">${escHtml(f.materia)}</td>
+                ${f.notas.map(n => `<td class="p-2 text-center" style="border:1px solid #D5DAE8">${fmt(n)}</td>`).join("")}
+                <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(f.promedio)}</td>
+              </tr>`).join("")}
+            <tr style="background:#F4F1EB">
+              <td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${periodos.length + 1}">Promedio general</td>
+              <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(general)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="text-xs mt-2" style="color:#6C7B8A">${prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación capturada.</p>`}
+        <div class="flex justify-around mt-10 text-xs text-center" style="color:#1C2B3A">
+          <div style="border-top:1px solid #1C2B3A; padding-top:4px; width:40%">Dirección</div>
+          <div style="border-top:1px solid #1C2B3A; padding-top:4px; width:40%">Sello del plantel</div>
+        </div>
+        <p class="text-xs mt-4" style="color:#6C7B8A">Expedida el ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
+      </div>
+      <button id="boImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
+    document.getElementById("boImprimirBtn").addEventListener("click", () => window.print());
+  }
+}
+
+// ============================================================
+// Utilidades compartidas: WhatsApp, membrete, fechas
+// ============================================================
+function normalizarTelefonoWA(tel) {
+  const d = String(tel || "").replace(/\D/g, "");
+  if (d.length === 10) return "52" + d;
+  if (d.length === 12 && d.startsWith("52")) return d;
+  if (d.length === 13 && d.startsWith("521")) return "52" + d.slice(3);
+  return d.length >= 11 ? d : null;
+}
+function abrirWhatsApp(tel, texto) {
+  const n = normalizarTelefonoWA(tel);
+  if (!n) return false;
+  window.open(`https://wa.me/${n}?text=${encodeURIComponent(texto)}`, "_blank");
+  return true;
+}
+async function cargarMembrete() {
+  const { data } = await sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad, telefono").eq("id", 1).maybeSingle();
+  const d = data || {};
+  return {
+    nombre: d.nombre_oficial || "Instituto Juan Bosco",
+    domicilio: d.domicilio || "",
+    ciudad: d.ciudad || "",
+    telefono: d.telefono || "",
+    logo: document.getElementById("headerLogo")?.src || "",
+  };
+}
+function membreteHtml(m) {
+  return `
+    <div class="flex items-center gap-3 mb-3">
+      ${m.logo ? `<img src="${m.logo}" style="height:56px" alt="" />` : ""}
+      <div class="flex-1 text-center">
+        <div class="text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${escHtml(m.nombre)}</div>
+        <div class="text-xs" style="color:#6C7B8A">${escHtml(m.domicilio)}${m.ciudad ? ", " + escHtml(m.ciudad) : ""}${m.telefono ? " · Tel. " + escHtml(m.telefono) : ""}</div>
+      </div>
+    </div>`;
+}
+function fechaLarga(d) {
+  return new Date(d).toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" });
+}
+function fechaHoraLarga(d) {
+  const f = new Date(d);
+  return `${fechaLarga(f)} a las ${f.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })} horas`;
+}
+function aInputDatetime(d) {
+  const f = d ? new Date(d) : new Date();
+  const p = n => String(n).padStart(2, "0");
+  return `${f.getFullYear()}-${p(f.getMonth() + 1)}-${p(f.getDate())}T${p(f.getHours())}:${p(f.getMinutes())}`;
+}
+const nombreCompletoAlumno = a => `${a.nombres} ${a.apellido_paterno} ${a.apellido_materno || ""}`.replace(/\s+/g, " ").trim();
+
+// ============================================================
+// Módulo Disciplina (reportes por pasos: aviso / citatorio / reunión)
+// ============================================================
+const DISC_ESTADOS = ["Registrado", "Aviso enviado", "Citatorio emitido", "Reunión realizada", "Cerrado"];
+const DISC_COLOR_GRAVEDAD = { "Leve": "#3F7A5E", "Grave": "#C27A1A", "Muy grave": "#B5453A" };
+
+function renderDisciplina(main) {
+  const puedeCatalogo = ["Administrador", "Director"].includes(state.perfil.rol);
+  let tabActivo = "reportes";
+
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Disciplina</h2>
+    <div class="flex gap-1 mb-4">
+      <button class="dsTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="reportes">Reportes</button>
+      <button class="dsTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="catalogo">Catálogo de incidencias</button>
+    </div>
+    <div id="dsContenido" class="max-w-3xl"></div>`;
+
+  function pintarTabs() {
+    document.querySelectorAll(".dsTabBtn").forEach(b => {
+      const activo = b.dataset.tab === tabActivo;
+      b.style.background = activo ? "#1E3A8A" : "#F4F1EB";
+      b.style.color = activo ? "#fff" : "#1E3A8A";
+    });
+  }
+  document.querySelectorAll(".dsTabBtn").forEach(b => b.addEventListener("click", () => { tabActivo = b.dataset.tab; pintarTabs(); cargarTab(); }));
+  pintarTabs();
+  cargarTab();
+
+  function cargarTab() {
+    const cont = document.getElementById("dsContenido");
+    if (tabActivo === "reportes") renderListaReportes(cont);
+    else renderCatalogo(cont);
+  }
+
+  // ---------- Catálogo ----------
+  async function renderCatalogo(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("tipos_incidencia").select("*").order("gravedad").order("nombre");
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    const lista = data || [];
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">La gravedad define el procedimiento: <strong>Leve</strong> → aviso al padre de familia; <strong>Grave</strong> y <strong>Muy grave</strong> → citatorio y reunión con acuerdos.</p>
+      ${puedeCatalogo ? `
+      <div class="p-3 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap" style="border-color:#E1DED5">
+        <input id="ctNombre" placeholder="Nueva incidencia (ej. Uso de celular en clase)" class="flex-1 min-w-48 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+        <select id="ctGravedad" class="px-2 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option>Leve</option><option>Grave</option><option>Muy grave</option></select>
+        <button id="ctAgregar" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
+      </div>
+      <div id="ctMsg"></div>` : ""}
+      ${["Leve", "Grave", "Muy grave"].map(g => `
+        <p class="text-sm font-semibold mt-3 mb-1" style="color:${DISC_COLOR_GRAVEDAD[g]}">${g}</p>
+        ${lista.filter(t => t.gravedad === g).map(t => `
+          <div class="flex justify-between items-center text-sm py-1.5 border-b" style="border-color:#F0EDE5; color:#1C2B3A; ${t.activo ? "" : "opacity:0.5"}">
+            <span>${escHtml(t.nombre)}${t.activo ? "" : " (inactiva)"}</span>
+            ${puedeCatalogo ? `<button class="ctToggle text-xs font-semibold" data-id="${t.id}" data-activo="${t.activo}" style="color:#1E3A8A">${t.activo ? "Desactivar" : "Activar"}</button>` : ""}
+          </div>`).join("") || `<p class="text-xs" style="color:#6C7B8A">Sin incidencias.</p>`}
+      `).join("")}`;
+
+    if (puedeCatalogo) {
+      document.getElementById("ctAgregar").addEventListener("click", async () => {
+        const nombre = document.getElementById("ctNombre").value.trim();
+        const msg = document.getElementById("ctMsg");
+        if (!nombre) { msg.innerHTML = errBox("Escribe el nombre de la incidencia."); return; }
+        const { error: e } = await sb.from("tipos_incidencia").insert({ nombre, gravedad: document.getElementById("ctGravedad").value });
+        if (e) { msg.innerHTML = errBox(escHtml(e.code === "23505" ? "Ya existe una incidencia con ese nombre." : e.message)); return; }
+        renderCatalogo(cont);
+      });
+      cont.querySelectorAll(".ctToggle").forEach(b => b.addEventListener("click", async () => {
+        await sb.from("tipos_incidencia").update({ activo: b.dataset.activo !== "true" }).eq("id", b.dataset.id);
+        renderCatalogo(cont);
+      }));
+    }
+  }
+
+  // ---------- Lista de reportes ----------
+  async function renderListaReportes(cont) {
+    cont.innerHTML = `
+      <div class="p-3 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap items-center" style="border-color:#E1DED5">
+        <input id="dsFiltroTexto" placeholder="Filtrar por alumno…" class="flex-1 min-w-40 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+        <select id="dsFiltroEstado" class="px-2 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">
+          <option value="">Todos los estados</option>${DISC_ESTADOS.map(e => `<option>${e}</option>`).join("")}
+        </select>
+        <button id="dsNuevoBtn" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">+ Nuevo reporte</button>
+      </div>
+      <div id="dsLista"><p class="text-xs" style="color:#6C7B8A">Cargando…</p></div>
+      <div id="dsDetalle"></div>`;
+
+    document.getElementById("dsNuevoBtn").addEventListener("click", () => renderNuevoReporte(cont));
+    let reportes = [];
+    const { data, error } = await sb.from("reportes_disciplina")
+      .select("id, numero, gravedad, estado, fecha_hecho, creado_en, alumnos(nombres, apellido_paterno, apellido_materno, matricula), tipos_incidencia(nombre)")
+      .order("creado_en", { ascending: false }).limit(300);
+    if (error) { document.getElementById("dsLista").innerHTML = errBox(escHtml(error.message)); return; }
+    reportes = data || [];
+
+    function pintarLista() {
+      const q = normalizarTexto(document.getElementById("dsFiltroTexto").value);
+      const est = document.getElementById("dsFiltroEstado").value;
+      const f = reportes.filter(r => (!est || r.estado === est) && (!q || normalizarTexto(nombreCompletoAlumno(r.alumnos)).includes(q)));
+      document.getElementById("dsLista").innerHTML = f.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Sin reportes.</p>` : f.map(r => `
+        <button class="dsAbrir w-full text-left p-3 rounded-xl bg-white border mb-2" data-id="${r.id}" style="border-color:#E1DED5">
+          <div class="flex justify-between gap-2">
+            <span class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(nombreCompletoAlumno(r.alumnos))}</span>
+            <span class="text-xs font-bold" style="color:${DISC_COLOR_GRAVEDAD[r.gravedad]}">${r.gravedad}</span>
+          </div>
+          <div class="text-xs" style="color:#6C7B8A">DISC-${String(r.numero).padStart(5, "0")} · ${escHtml(r.tipos_incidencia?.nombre || "")} · ${new Date(r.fecha_hecho + "T00:00:00").toLocaleDateString("es-MX")}</div>
+          <div class="text-xs mt-1 font-semibold" style="color:#1C2B3A">Estado: ${r.estado}</div>
+        </button>`).join("");
+      document.querySelectorAll(".dsAbrir").forEach(b => b.addEventListener("click", () => renderDetalleReporte(cont, b.dataset.id)));
+    }
+    document.getElementById("dsFiltroTexto").addEventListener("input", pintarLista);
+    document.getElementById("dsFiltroEstado").addEventListener("change", pintarLista);
+    pintarLista();
+  }
+
+  // ---------- Nuevo reporte ----------
+  async function renderNuevoReporte(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data: tipos, error } = await sb.from("tipos_incidencia").select("id, nombre, gravedad").eq("activo", true).order("gravedad").order("nombre");
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    let alumnoSel = null;
+    const hoy = aInputDatetime().slice(0, 10);
+
+    cont.innerHTML = `
+      <button id="dsVolver" class="text-xs font-semibold mb-3" style="color:#1E3A8A">← Volver a reportes</button>
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nuevo reporte de disciplina</p>
+        <div class="flex gap-2 mb-1">
+          <input id="nrBuscar" placeholder="Buscar alumno por nombre o matrícula…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          <button id="nrBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+        </div>
+        <div id="nrResultados" class="mb-2"></div>
+        <p id="nrAlumno" class="text-sm font-semibold mb-2" style="color:#3F7A5E"></p>
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Incidencia</label>
+        <select id="nrTipo" class="w-full px-3 py-2 rounded-lg text-sm mb-1 outline-none border" style="border-color:#E1DED5">
+          <option value="">Selecciona…</option>
+          ${["Leve", "Grave", "Muy grave"].map(g => `<optgroup label="${g}">${tipos.filter(t => t.gravedad === g).map(t => `<option value="${t.id}">${escHtml(t.nombre)}</option>`).join("")}</optgroup>`).join("")}
+        </select>
+        <p id="nrProcedimiento" class="text-xs mb-2" style="color:#6C7B8A"></p>
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha del hecho</label>
+        <input id="nrFecha" type="date" value="${hoy}" max="${hoy}" class="px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Descripción de lo ocurrido</label>
+        <textarea id="nrDescripcion" rows="4" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" placeholder="Describe el hecho con claridad: qué pasó, dónde y quiénes estuvieron presentes."></textarea>
+        <div id="nrMsg"></div>
+        <button id="nrGuardar" class="w-full py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Registrar reporte</button>
+      </div>`;
+
+    document.getElementById("dsVolver").addEventListener("click", () => renderListaReportes(cont));
+    document.getElementById("nrTipo").addEventListener("change", e => {
+      const t = tipos.find(x => x.id === e.target.value);
+      document.getElementById("nrProcedimiento").textContent = !t ? "" : t.gravedad === "Leve"
+        ? "Procedimiento: aviso al padre de familia."
+        : "Procedimiento: citatorio al padre de familia, reunión y firma de acuerdos.";
+    });
+
+    async function buscar() {
+      const criterio = document.getElementById("nrBuscar").value.trim().replace(/[,()%*]/g, " ").trim();
+      const res = document.getElementById("nrResultados");
+      if (!criterio) { res.innerHTML = ""; return; }
+      const { data: al, error: e } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula")
+        .eq("activo", true)
+        .or(`nombres.ilike.%${criterio}%,apellido_paterno.ilike.%${criterio}%,apellido_materno.ilike.%${criterio}%,matricula.ilike.%${criterio}%`)
+        .order("apellido_paterno").limit(15);
+      if (e) { res.innerHTML = errBox(escHtml(e.message)); return; }
+      const lista = al || [];
+      res.innerHTML = lista.length === 0 ? `<p class="text-xs" style="color:#6C7B8A">Sin resultados.</p>` : lista.map((a, i) => `
+        <button class="nrSel w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A">${escHtml(nombreCompletoAlumno(a))} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})</span></button>`).join("");
+      res.querySelectorAll(".nrSel").forEach(b => b.addEventListener("click", () => {
+        alumnoSel = lista[Number(b.dataset.i)];
+        document.getElementById("nrAlumno").textContent = "Alumno: " + nombreCompletoAlumno(alumnoSel);
+        res.innerHTML = "";
+      }));
+    }
+    document.getElementById("nrBuscarBtn").addEventListener("click", buscar);
+    document.getElementById("nrBuscar").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+
+    let guardando = false;
+    document.getElementById("nrGuardar").addEventListener("click", async () => {
+      const msg = document.getElementById("nrMsg");
+      const tipo = tipos.find(t => t.id === document.getElementById("nrTipo").value);
+      const descripcion = document.getElementById("nrDescripcion").value.trim();
+      if (guardando) return;
+      if (!alumnoSel) { msg.innerHTML = errBox("Selecciona al alumno."); return; }
+      if (!tipo) { msg.innerHTML = errBox("Selecciona la incidencia."); return; }
+      if (descripcion.length < 10) { msg.innerHTML = errBox("Describe lo ocurrido (mínimo 10 caracteres)."); return; }
+      guardando = true;
+      const { data: nuevo, error: e } = await sb.from("reportes_disciplina").insert({
+        alumno_id: alumnoSel.id, tipo_incidencia_id: tipo.id, gravedad: tipo.gravedad,
+        fecha_hecho: document.getElementById("nrFecha").value, descripcion,
+      }).select("id").single();
+      guardando = false;
+      if (e) { msg.innerHTML = errBox(escHtml(e.message)); return; }
+      renderListaReportes(cont).then(() => renderDetalleReporte(cont, nuevo.id));
+    });
+  }
+
+  // ---------- Detalle y pasos ----------
+  async function renderDetalleReporte(cont, id) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const [repRes, membrete] = await Promise.all([
+      sb.from("reportes_disciplina").select("*, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula), tipos_incidencia(nombre)").eq("id", id).single(),
+      cargarMembrete(),
+    ]);
+    if (repRes.error) { cont.innerHTML = errBox(escHtml(repRes.error.message)); return; }
+    let r = repRes.data;
+    const alumno = r.alumnos;
+    const folio = `DISC-${String(r.numero).padStart(5, "0")}`;
+
+    const [tutRes, inscRes] = await Promise.all([
+      sb.from("alumno_tutores").select("es_contacto_principal, tutores(id, nombre_completo, parentesco, telefono)").eq("alumno_id", alumno.id).order("es_contacto_principal", { ascending: false }),
+      sb.from("inscripciones").select("grupos(letra, grados(nombre, nivel))").eq("alumno_id", alumno.id).order("fecha_inscripcion", { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    const tutores = (tutRes.data || []).map(t => t.tutores).filter(Boolean);
+    const tutor = tutores.find(t => t.id === r.tutor_id) || tutores[0] || null;
+    const grupoTxt = inscRes.data?.grupos ? `${inscRes.data.grupos.grados.nombre} "${inscRes.data.grupos.letra}" (${inscRes.data.grupos.grados.nivel})` : "";
+    const nombreAl = nombreCompletoAlumno(alumno);
+    const esLeve = r.gravedad === "Leve";
+
+    async function actualizar(campos) {
+      const { error } = await sb.from("reportes_disciplina").update(campos).eq("id", r.id);
+      if (error) { document.getElementById("rdMsg").innerHTML = errBox(escHtml(error.message)); return false; }
+      return true;
+    }
+    const recargar = () => renderDetalleReporte(cont, id);
+
+    function pasoHtml() {
+      const est = r.estado;
+      let html = "";
+
+      // PASO 1
+      html += `<div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <p class="text-sm font-bold mb-2" style="color:#1E3A8A">Paso 1 · ${esLeve ? "Aviso al padre de familia" : "Citatorio al padre de familia"}</p>`;
+      if (tutores.length > 1 && est === "Registrado") {
+        html += `<label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Dirigir a</label>
+          <select id="rdTutorSel" class="px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
+            ${tutores.map(t => `<option value="${t.id}" ${tutor && t.id === tutor.id ? "selected" : ""}>${escHtml(t.nombre_completo)}${t.parentesco ? " (" + escHtml(t.parentesco) + ")" : ""}</option>`).join("")}
+          </select>`;
+      }
+      if (tutor) html += `<p class="text-xs mb-2" style="color:#6C7B8A">Contacto: ${escHtml(tutor.nombre_completo)} ${tutor.parentesco ? "(" + escHtml(tutor.parentesco) + ")" : ""} · ${escHtml(tutor.telefono || "sin teléfono")}</p>`;
+      else html += errBox("Este alumno no tiene tutor registrado. Agrégalo en Alumnos y Grupos.");
+
+      if (esLeve && est === "Registrado") {
+        const msgDef = `Estimado(a) ${tutor?.nombre_completo || "padre de familia"}: le informamos que su hijo(a) ${nombreAl} (${grupoTxt}) presentó la siguiente situación el ${fechaLarga(r.fecha_hecho + "T00:00:00")}: ${r.tipos_incidencia?.nombre || ""}. ${r.descripcion} Le agradecemos su apoyo para dialogar con su hijo(a). Atentamente, ${membrete.nombre.replace(/\n/g, " ")}.`;
+        html += `<textarea id="rdMensajeAviso" rows="5" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">${escHtml(msgDef)}</textarea>
+          <div class="flex gap-2 flex-wrap">
+            <button id="rdWaAviso" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#25804B; color:#fff" ${tutor?.telefono ? "" : "disabled"}>Enviar por WhatsApp</button>
+            <button id="rdAvisoHecho" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Marcar aviso como enviado</button>
+            <button id="rdEscalar" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#FDEBD0; color:#8A5A12">Girar citatorio</button>
+          </div>`;
+      } else if (!esLeve && est === "Registrado") {
+        html += `<label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha y hora de la cita con el padre de familia</label>
+          <input id="rdCita" type="datetime-local" value="${aInputDatetime(new Date(Date.now() + 86400000))}" class="px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          <div><button id="rdEmitir" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Emitir citatorio</button></div>`;
+      } else {
+        html += `<p class="text-xs" style="color:#3F7A5E">✔ ${est === "Aviso enviado" || esLeve && !r.citatorio_emitido_en ? `Aviso enviado${r.aviso_enviado_en ? " el " + fechaLarga(r.aviso_enviado_en) : ""}.` : `Citatorio emitido${r.cita_fecha ? " para el " + fechaHoraLarga(r.cita_fecha) : ""}.`}</p>`;
+        if (r.citatorio_emitido_en) {
+          html += `<div class="flex gap-2 flex-wrap mt-2">
+            <button id="rdWaCitatorio" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#25804B; color:#fff" ${tutor?.telefono ? "" : "disabled"}>Enviar citatorio por WhatsApp</button>
+            <button id="rdImprimirCitatorio" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Imprimir citatorio</button>
+          </div>`;
+        }
+      }
+      html += `</div>`;
+
+      // PASO 2
+      if (r.citatorio_emitido_en) {
+        html += `<div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-bold mb-2" style="color:#1E3A8A">Paso 2 · Reunión, acuerdos y sanciones</p>`;
+        if (est === "Citatorio emitido" || est === "Reunión realizada") {
+          const editable = est === "Citatorio emitido";
+          html += `
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha y hora de la reunión</label>
+          <input id="rdReunion" type="datetime-local" value="${aInputDatetime(r.reunion_fecha || r.cita_fecha)}" ${editable ? "" : "disabled"} class="px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Padre, madre o tutor que asiste</label>
+          <input id="rdAsistente" value="${escHtml(r.asistente_tutor || tutor?.nombre_completo || "")}" ${editable ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Testigo</label>
+          <input id="rdTestigo" value="${escHtml(r.testigo || "")}" ${editable ? "" : "disabled"} placeholder="Nombre del testigo" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Acuerdos</label>
+          <textarea id="rdAcuerdos" rows="3" ${editable ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">${escHtml(r.acuerdos || "")}</textarea>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Sanciones (si aplican)</label>
+          <textarea id="rdSanciones" rows="2" ${editable ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">${escHtml(r.sanciones || "")}</textarea>
+          <div class="flex gap-2 flex-wrap">
+            ${editable ? `<button id="rdGuardarReunion" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar reunión</button>` : `<button id="rdImprimirActa" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir reporte para firma</button>`}
+          </div>`;
+        } else {
+          html += `<p class="text-xs" style="color:#3F7A5E">✔ Reunión realizada el ${fechaHoraLarga(r.reunion_fecha)}.</p>
+            <button id="rdImprimirActa" class="mt-2 px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Imprimir reporte para firma</button>`;
+        }
+        html += `</div>`;
+      }
+
+      // CIERRE
+      if (est === "Aviso enviado" || est === "Reunión realizada") {
+        html += `<button id="rdCerrar" class="w-full py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Cerrar reporte</button>`;
+      }
+      return html;
+    }
+
+    cont.innerHTML = `
+      <button id="rdVolver" class="text-xs font-semibold mb-3" style="color:#1E3A8A">← Volver a reportes</button>
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <div class="flex justify-between gap-2">
+          <p class="text-sm font-bold" style="color:#1E3A8A">${folio} · ${escHtml(nombreAl)}</p>
+          <span class="text-xs font-bold" style="color:${DISC_COLOR_GRAVEDAD[r.gravedad]}">${r.gravedad}</span>
+        </div>
+        <p class="text-xs" style="color:#6C7B8A">${escHtml(grupoTxt)} · ${escHtml(r.tipos_incidencia?.nombre || "")} · Hecho del ${fechaLarga(r.fecha_hecho + "T00:00:00")}</p>
+        <p class="text-sm mt-2" style="color:#1C2B3A; white-space:pre-line">${escHtml(r.descripcion)}</p>
+        <p class="text-xs mt-2 font-semibold" style="color:#1C2B3A">Estado: ${r.estado}</p>
+      </div>
+      <div id="rdMsg"></div>
+      ${pasoHtml()}
+      <div id="rdDoc" class="mt-4"></div>`;
+
+    document.getElementById("rdVolver").addEventListener("click", () => renderListaReportes(cont));
+    const on = (idEl, fn) => { const el = document.getElementById(idEl); if (el) el.addEventListener("click", fn); };
+
+    function waTexto(tipo) {
+      if (tipo === "citatorio") {
+        return `Estimado(a) ${tutor?.nombre_completo || "padre de familia"}: se le cita a una reunión en ${membrete.nombre.replace(/\n/g, " ")} el ${fechaHoraLarga(r.cita_fecha)}, para tratar un asunto relacionado con su hijo(a) ${nombreAl} (${grupoTxt}): ${r.tipos_incidencia?.nombre || ""}. Su asistencia es importante. Si no puede asistir, favor de comunicarse con nosotros. Atentamente, la Dirección.`;
+      }
+    }
+
+    const selTutor = document.getElementById("rdTutorSel");
+    if (selTutor) selTutor.addEventListener("change", async () => { if (await actualizar({ tutor_id: selTutor.value })) recargar(); });
+
+    on("rdWaAviso", async () => {
+      const texto = document.getElementById("rdMensajeAviso").value;
+      if (abrirWhatsApp(tutor.telefono, texto)) {
+        if (await actualizar({ estado: "Aviso enviado", aviso_enviado_en: new Date().toISOString(), tutor_id: tutor.id })) recargar();
+      } else document.getElementById("rdMsg").innerHTML = errBox("El teléfono del tutor no es válido para WhatsApp (se requieren 10 dígitos).");
+    });
+    on("rdAvisoHecho", async () => { if (await actualizar({ estado: "Aviso enviado", aviso_enviado_en: new Date().toISOString(), tutor_id: tutor?.id || null })) recargar(); });
+    on("rdEscalar", () => {
+      if (!confirm("¿Girar citatorio en lugar de solo avisar? El reporte pasará al procedimiento de reunión con acuerdos.")) return;
+      r.gravedad = "Grave";
+      actualizar({ gravedad: "Grave" }).then(ok => { if (ok) recargar(); });
+    });
+    on("rdEmitir", async () => {
+      const cita = document.getElementById("rdCita").value;
+      if (!cita) { document.getElementById("rdMsg").innerHTML = errBox("Indica la fecha y hora de la cita."); return; }
+      if (await actualizar({ estado: "Citatorio emitido", cita_fecha: new Date(cita).toISOString(), citatorio_emitido_en: new Date().toISOString(), tutor_id: tutor?.id || null })) recargar();
+    });
+    on("rdWaCitatorio", () => {
+      if (!abrirWhatsApp(tutor.telefono, waTexto("citatorio"))) document.getElementById("rdMsg").innerHTML = errBox("El teléfono del tutor no es válido para WhatsApp (se requieren 10 dígitos).");
+    });
+    on("rdImprimirCitatorio", () => mostrarDocumento(citatorioHtml()));
+    on("rdGuardarReunion", async () => {
+      const acuerdos = document.getElementById("rdAcuerdos").value.trim();
+      const testigo = document.getElementById("rdTestigo").value.trim();
+      if (!acuerdos) { document.getElementById("rdMsg").innerHTML = errBox("Captura los acuerdos de la reunión."); return; }
+      if (!testigo) { document.getElementById("rdMsg").innerHTML = errBox("Captura el nombre del testigo."); return; }
+      const ok = await actualizar({
+        estado: "Reunión realizada", reunion_fecha: new Date(document.getElementById("rdReunion").value).toISOString(),
+        asistente_tutor: document.getElementById("rdAsistente").value.trim(), testigo, acuerdos,
+        sanciones: document.getElementById("rdSanciones").value.trim() || null,
+      });
+      if (ok) recargar();
+    });
+    on("rdImprimirActa", () => mostrarDocumento(actaHtml()));
+    on("rdCerrar", async () => {
+      if (!confirm("¿Cerrar este reporte? Ya no podrá modificarse.")) return;
+      if (await actualizar({ estado: "Cerrado", cerrado_en: new Date().toISOString() })) recargar();
+    });
+
+    function mostrarDocumento(html) {
+      const doc = document.getElementById("rdDoc");
+      doc.innerHTML = `<div id="ibDisciplinaImprimible" class="ib-imprimible p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px">${html}</div>
+        <button id="rdImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
+      document.getElementById("rdImprimirBtn").addEventListener("click", () => window.print());
+      doc.scrollIntoView({ behavior: "smooth" });
+    }
+
+    function firmaHtml(rotulo, nombre) {
+      return `<div style="text-align:center; width:30%"><div style="border-top:1px solid #1C2B3A; padding-top:4px" class="text-xs">${escHtml(rotulo)}${nombre ? `<br><span style="color:#6C7B8A">${escHtml(nombre)}</span>` : ""}</div></div>`;
+    }
+
+    function citatorioHtml() {
+      return `${membreteHtml(membrete)}
+        <h3 class="text-sm font-bold text-center mb-1" style="color:#1E3A8A">CITATORIO</h3>
+        <p class="text-xs text-center mb-4" style="color:#6C7B8A">Folio ${folio}</p>
+        <p class="text-xs text-right mb-4" style="color:#1C2B3A">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${fechaLarga(r.citatorio_emitido_en)}.</p>
+        <p class="text-sm mb-3" style="color:#1C2B3A"><strong>C. ${escHtml(tutor?.nombre_completo || "Padre, madre o tutor")}</strong><br>${tutor?.parentesco ? escHtml(tutor.parentesco) + " del alumno(a) " : "Padre, madre o tutor del alumno(a) "}${escHtml(nombreAl)}${grupoTxt ? ", de " + escHtml(grupoTxt) : ""}.<br>P r e s e n t e.</p>
+        <p class="text-sm mb-3" style="color:#1C2B3A; text-align:justify">Por medio de la presente se le cita a presentarse en las instalaciones de este plantel el <strong>${fechaHoraLarga(r.cita_fecha)}</strong>, para tratar un asunto relacionado con la conducta de su hijo(a), por el siguiente motivo: <strong>${escHtml(r.tipos_incidencia?.nombre || "")}</strong>, ocurrido el ${fechaLarga(r.fecha_hecho + "T00:00:00")}.</p>
+        <p class="text-sm mb-3" style="color:#1C2B3A; text-align:justify">Su asistencia es indispensable para dialogar sobre lo ocurrido y establecer los acuerdos que correspondan. De no poder asistir en la fecha indicada, le pedimos comunicarse previamente con la Dirección.</p>
+        <p class="text-sm mt-6 mb-8" style="color:#1C2B3A">Atentamente,</p>
+        <div class="flex justify-between mt-10">${firmaHtml("Director(a)", "")}${firmaHtml("Recibí citatorio (tutor)", "")}</div>
+        <p class="text-xs mt-4" style="color:#6C7B8A">Fecha en que recibe: ____ / ____ / ________</p>`;
+    }
+
+    function actaHtml() {
+      return `${membreteHtml(membrete)}
+        <h3 class="text-sm font-bold text-center mb-1" style="color:#1E3A8A">REPORTE DE DISCIPLINA Y ACUERDOS</h3>
+        <p class="text-xs text-center mb-3" style="color:#6C7B8A">Folio ${folio}</p>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-3" style="color:#1C2B3A">
+          <div><strong>Alumno(a):</strong> ${escHtml(nombreAl)}</div>
+          <div><strong>Matrícula:</strong> ${escHtml(alumno.matricula || "")}</div>
+          <div><strong>Grado y grupo:</strong> ${escHtml(grupoTxt)}</div>
+          <div><strong>Gravedad:</strong> ${r.gravedad}</div>
+          <div><strong>Fecha del hecho:</strong> ${fechaLarga(r.fecha_hecho + "T00:00:00")}</div>
+          <div><strong>Reunión:</strong> ${r.reunion_fecha ? fechaHoraLarga(r.reunion_fecha) : ""}</div>
+        </div>
+        <p class="text-sm mb-1" style="color:#1E3A8A"><strong>Incidencia:</strong> ${escHtml(r.tipos_incidencia?.nombre || "")}</p>
+        <p class="text-sm mb-3" style="color:#1C2B3A; white-space:pre-line; text-align:justify"><strong>Descripción de los hechos:</strong> ${escHtml(r.descripcion)}</p>
+        <p class="text-sm mb-3" style="color:#1C2B3A; white-space:pre-line; text-align:justify"><strong>Acuerdos:</strong> ${escHtml(r.acuerdos || "")}</p>
+        ${r.sanciones ? `<p class="text-sm mb-3" style="color:#1C2B3A; white-space:pre-line; text-align:justify"><strong>Sanciones:</strong> ${escHtml(r.sanciones)}</p>` : ""}
+        <p class="text-xs mb-8" style="color:#6C7B8A; text-align:justify">Las partes manifiestan estar de acuerdo con lo asentado en el presente reporte y firman de conformidad.</p>
+        <div class="flex justify-between mt-12">
+          ${firmaHtml("Padre, madre o tutor", r.asistente_tutor)}
+          ${firmaHtml("Director(a)", "")}
+          ${firmaHtml("Testigo", r.testigo)}
+        </div>`;
+    }
+  }
+}
+
+// ============================================================
+// Módulo Avisos (comunicados a padres de familia por WhatsApp)
+// ============================================================
+function renderAvisos(main) {
+  let tabActivo = "nuevo";
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Avisos</h2>
+    <div class="flex gap-1 mb-4">
+      <button class="avTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="nuevo">Nuevo aviso</button>
+      <button class="avTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="historial">Historial</button>
+    </div>
+    <div id="avContenido" class="max-w-3xl"></div>`;
+  function pintarTabs() {
+    document.querySelectorAll(".avTabBtn").forEach(b => {
+      const activo = b.dataset.tab === tabActivo;
+      b.style.background = activo ? "#1E3A8A" : "#F4F1EB";
+      b.style.color = activo ? "#fff" : "#1E3A8A";
+    });
+  }
+  document.querySelectorAll(".avTabBtn").forEach(b => b.addEventListener("click", () => { tabActivo = b.dataset.tab; pintarTabs(); cargarTab(); }));
+  pintarTabs();
+  cargarTab();
+
+  function cargarTab() {
+    const cont = document.getElementById("avContenido");
+    if (tabActivo === "nuevo") renderNuevoAviso(cont); else renderHistorial(cont);
+  }
+
+  async function renderNuevoAviso(cont) {
+    const { data: grupos } = await sb.from("grupos").select("id, letra, grados(nombre, nivel)").order("letra");
+    const gruposOk = (grupos || []).filter(g => g.grados);
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Título</label>
+        <input id="avTitulo" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" placeholder="Ej. Suspensión de clases" />
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Mensaje</label>
+        <textarea id="avMensaje" rows="5" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" placeholder="Escribe el comunicado para los padres de familia."></textarea>
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">¿A quién va dirigido?</label>
+        <div class="flex gap-2 flex-wrap mb-2">
+          <select id="avAudiencia" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">
+            <option value="Todos">Todos los padres de familia</option><option value="Nivel">Un nivel</option><option value="Grupo">Un grupo</option>
+          </select>
+          <select id="avNivel" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5; display:none"><option>Secundaria</option><option>Preparatoria</option></select>
+          <select id="avGrupo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5; display:none">
+            ${gruposOk.map(g => `<option value="${g.id}">${escHtml(g.grados.nombre)} "${escHtml(g.letra)}" (${escHtml(g.grados.nivel)})</option>`).join("")}
+          </select>
+        </div>
+        <div id="avMsg"></div>
+        <button id="avPreparar" class="w-full py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar y preparar envíos</button>
+      </div>
+      <div id="avEnvios"></div>`;
+    const aud = document.getElementById("avAudiencia");
+    aud.addEventListener("change", () => {
+      document.getElementById("avNivel").style.display = aud.value === "Nivel" ? "" : "none";
+      document.getElementById("avGrupo").style.display = aud.value === "Grupo" ? "" : "none";
+    });
+    let guardando = false;
+    document.getElementById("avPreparar").addEventListener("click", async () => {
+      const msg = document.getElementById("avMsg");
+      const titulo = document.getElementById("avTitulo").value.trim();
+      const mensaje = document.getElementById("avMensaje").value.trim();
+      if (guardando) return;
+      if (!titulo || mensaje.length < 5) { msg.innerHTML = errBox("Escribe el título y el mensaje."); return; }
+      if (aud.value === "Grupo" && !document.getElementById("avGrupo").value) { msg.innerHTML = errBox("Selecciona el grupo."); return; }
+      guardando = true;
+      const { data, error } = await sb.from("avisos").insert({
+        titulo, mensaje, audiencia: aud.value,
+        nivel: aud.value === "Nivel" ? document.getElementById("avNivel").value : null,
+        grupo_id: aud.value === "Grupo" ? document.getElementById("avGrupo").value : null,
+      }).select().single();
+      guardando = false;
+      if (error) { msg.innerHTML = errBox(escHtml(error.message)); return; }
+      msg.innerHTML = "";
+      mostrarEnvios(document.getElementById("avEnvios"), data);
+    });
+  }
+
+  async function renderHistorial(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("avisos").select("*").order("creado_en", { ascending: false }).limit(100);
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    const lista = data || [];
+    cont.innerHTML = (lista.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay avisos.</p>` : lista.map((a, i) => `
+      <button class="avAbrir w-full text-left p-3 rounded-xl bg-white border mb-2" data-i="${i}" style="border-color:#E1DED5">
+        <div class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(a.titulo)}</div>
+        <div class="text-xs" style="color:#6C7B8A">${fechaLarga(a.creado_en)} · ${a.audiencia === "Todos" ? "Todos" : a.audiencia === "Nivel" ? a.nivel : "Un grupo"}</div>
+      </button>`).join("")) + `<div id="avEnvios"></div>`;
+    cont.querySelectorAll(".avAbrir").forEach(b => b.addEventListener("click", () => mostrarEnvios(document.getElementById("avEnvios"), lista[Number(b.dataset.i)])));
+  }
+
+  async function mostrarEnvios(caja, aviso, incluirTodos = false) {
+    caja.innerHTML = `<p class="text-xs mt-3" style="color:#6C7B8A">Preparando destinatarios…</p>`;
+    let q = sb.from("inscripciones").select("grupo_id, alumnos(id, nombres, apellido_paterno, apellido_materno, activo), grupos(grados(nivel))").eq("estado", "Inscrito");
+    if (aviso.audiencia === "Grupo") q = q.eq("grupo_id", aviso.grupo_id);
+    const [inscRes, envRes, membrete] = await Promise.all([q, sb.from("avisos_envios").select("tutor_id").eq("aviso_id", aviso.id), cargarMembrete()]);
+    if (inscRes.error) { caja.innerHTML = errBox(escHtml(inscRes.error.message)); return; }
+    let insc = (inscRes.data || []).filter(i => i.alumnos && i.alumnos.activo !== false);
+    if (aviso.audiencia === "Nivel") insc = insc.filter(i => i.grupos?.grados?.nivel === aviso.nivel);
+    const alumnoIds = [...new Set(insc.map(i => i.alumnos.id))];
+    if (alumnoIds.length === 0) { caja.innerHTML = `<div class="mt-3">${errBox("No hay alumnos inscritos para esa audiencia.")}</div>`; return; }
+
+    const { data: rel, error } = await sb.from("alumno_tutores").select("alumno_id, es_contacto_principal, tutores(id, nombre_completo, telefono)").in("alumno_id", alumnoIds);
+    if (error) { caja.innerHTML = errBox(escHtml(error.message)); return; }
+
+    // Un solo mensaje por tutor (aunque tenga varios hijos); se usa el contacto principal de cada alumno.
+    const porTutor = new Map();
+    const alumnoPorId = new Map(insc.map(i => [i.alumnos.id, i.alumnos]));
+    const principalPorAlumno = new Map();
+    (rel || []).forEach(r => { if (r.tutores && (r.es_contacto_principal || !principalPorAlumno.has(r.alumno_id))) principalPorAlumno.set(r.alumno_id, r.tutores); });
+    const agregar = (t, alumnoId) => {
+      if (!porTutor.has(t.id)) porTutor.set(t.id, { tutor: t, hijos: [] });
+      porTutor.get(t.id).hijos.push(nombreCompletoAlumno(alumnoPorId.get(alumnoId)));
+    };
+    if (incluirTodos) (rel || []).forEach(r => { if (r.tutores) agregar(r.tutores, r.alumno_id); });
+    else principalPorAlumno.forEach((t, alumnoId) => agregar(t, alumnoId));
+    const sinTutor = alumnoIds.filter(id => !principalPorAlumno.has(id)).length;
+    const enviados = new Set((envRes.data || []).map(e => e.tutor_id));
+    const destinatarios = [...porTutor.values()].sort((a, b) => a.tutor.nombre_completo.localeCompare(b.tutor.nombre_completo, "es"));
+    const textoPara = t => `Estimado(a) ${t.nombre_completo}:\n\n*${aviso.titulo}*\n\n${aviso.mensaje}\n\nAtentamente,\n${membrete.nombre.replace(/\n/g, " ")}`;
+
+    caja.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mt-4" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(aviso.titulo)}</p>
+        <p class="text-xs mb-2" style="color:#6C7B8A">${destinatarios.length} familias${sinTutor ? ` · ${sinTutor} alumno(s) sin tutor registrado` : ""}. Toca "WhatsApp" para abrir el mensaje listo; solo falta presionar enviar.</p>
+        <button id="avImprimir" class="mb-2 px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Imprimir aviso</button>
+        <label class="flex items-center gap-2 text-xs mb-2" style="color:#1E3A8A"><input type="checkbox" id="avTodosTutores" ${incluirTodos ? "checked" : ""} /> Incluir también al segundo tutor de cada alumno</label>
+        <div id="avMsg2"></div>
+        ${destinatarios.map(d => `
+          <div class="flex items-center justify-between gap-2 py-2 border-t" style="border-color:#F0EDE5">
+            <div class="min-w-0">
+              <div class="text-sm" style="color:#1C2B3A">${escHtml(d.tutor.nombre_completo)}</div>
+              <div class="text-xs" style="color:#6C7B8A">${escHtml(d.hijos.join(", "))} · ${escHtml(d.tutor.telefono || "sin teléfono")}</div>
+            </div>
+            <button class="avWa px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap" data-id="${d.tutor.id}" style="background:${enviados.has(d.tutor.id) ? "#E6F0EA" : "#25804B"}; color:${enviados.has(d.tutor.id) ? "#3F7A5E" : "#fff"}" ${d.tutor.telefono ? "" : "disabled"}>${enviados.has(d.tutor.id) ? "Enviado ✓" : "WhatsApp"}</button>
+          </div>`).join("")}
+      </div>
+      <div id="avDoc"></div>`;
+
+    caja.querySelectorAll(".avWa").forEach(b => b.addEventListener("click", async () => {
+      const d = porTutor.get(b.dataset.id);
+      if (!abrirWhatsApp(d.tutor.telefono, textoPara(d.tutor))) {
+        document.getElementById("avMsg2").innerHTML = errBox("El teléfono de " + escHtml(d.tutor.nombre_completo) + " no es válido para WhatsApp (se requieren 10 dígitos)."); return;
+      }
+      await sb.from("avisos_envios").upsert({ aviso_id: aviso.id, tutor_id: d.tutor.id }, { onConflict: "aviso_id,tutor_id" });
+      b.textContent = "Enviado ✓"; b.style.background = "#E6F0EA"; b.style.color = "#3F7A5E";
+    }));
+
+    document.getElementById("avTodosTutores").addEventListener("change", e => mostrarEnvios(caja, aviso, e.target.checked));
+    document.getElementById("avImprimir").addEventListener("click", () => {
+      const doc = document.getElementById("avDoc");
+      doc.innerHTML = `<div id="ibAvisoCircular" class="ib-imprimible p-6 rounded-xl bg-white border mt-4" style="border-color:#E1DED5; width:100%; max-width:760px">
+          ${membreteHtml(membrete)}
+          <h3 class="text-sm font-bold text-center mb-1" style="color:#1E3A8A">AVISO A PADRES DE FAMILIA</h3>
+          <p class="text-xs text-right mb-3" style="color:#1C2B3A">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${fechaLarga(aviso.creado_en)}.</p>
+          <p class="text-sm font-bold mb-2" style="color:#1E3A8A">${escHtml(aviso.titulo)}</p>
+          <p class="text-sm mb-8" style="color:#1C2B3A; white-space:pre-line; text-align:justify">${escHtml(aviso.mensaje)}</p>
+          <p class="text-sm" style="color:#1C2B3A">Atentamente,<br>La Dirección</p>
+        </div>
+        <button id="avImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
+      document.getElementById("avImprimirBtn").addEventListener("click", () => window.print());
+      doc.scrollIntoView({ behavior: "smooth" });
+    });
   }
 }
 
