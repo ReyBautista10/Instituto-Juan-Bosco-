@@ -2375,8 +2375,15 @@ function renderCalificaciones(main) {
       return total;
     }
 
-    const periodos = [...new Set(criterios.map(c => c.periodo))];
+    // Secundaria: 5 parciales. Preparatoria: 5 bimestres. (Se conservan periodos antiguos con otro nombre.)
+    const nivelClase = asignacion.grupos?.grados?.nivel;
+    const prefijoPeriodo = nivelClase === "Preparatoria" ? "Bimestre" : "Parcial";
+    const periodos = [...new Set([
+      ...[1, 2, 3, 4, 5].map(n => `${prefijoPeriodo} ${n}`),
+      ...criterios.map(c => c.periodo),
+    ])];
     let periodoActivo = periodos[0] || null;
+    let guardandoCriterio = false;
 
     function pintar() {
       const criteriosPeriodo = criterios.filter(c => c.periodo === periodoActivo);
@@ -2388,7 +2395,6 @@ function renderCalificaciones(main) {
       cont.innerHTML = `
         <div class="flex gap-1 mb-3 flex-wrap">
           ${periodos.map(p => `<button class="calPeriodoBtn px-3 py-1.5 rounded-lg text-xs font-semibold" data-p="${p}" style="background:${p === periodoActivo ? "#1E3A8A" : "#F4F1EB"}; color:${p === periodoActivo ? "#fff" : "#1E3A8A"}">${p}</button>`).join("")}
-          ${puedeEditar ? `<button id="calNuevoPeriodoBtn" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">+ Periodo</button>` : ""}
         </div>
 
         ${periodoActivo ? `
@@ -2417,6 +2423,11 @@ function renderCalificaciones(main) {
 
         ${criteriosPeriodo.length > 0 && alumnos.length > 0 ? `
         <div class="p-4 rounded-xl bg-white border overflow-x-auto" style="border-color:#E1DED5">
+          <div class="text-xs mb-3 p-2 rounded-lg" style="background:#EEF2FB; color:#1E3A8A">
+            <strong>¿Cómo capturar?</strong> Escribe la calificación que obtuvo el alumno en cada criterio en <strong>escala de 0 a 10</strong>.
+            El sistema aplica automáticamente el porcentaje de cada criterio y calcula la calificación final del periodo.
+            Ejemplo: si en "Examen" (40%) el alumno sacó 8, aporta 3.2 puntos a la final.
+          </div>
           <table class="text-sm w-full">
             <thead>
               <tr style="color:#6C7B8A">
@@ -2429,7 +2440,7 @@ function renderCalificaciones(main) {
               ${alumnos.map(a => `
                 <tr style="color:#1C2B3A">
                   <td class="py-1 pr-2">${a.nombres} ${a.apellido_paterno}</td>
-                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" min="0" max="10" step="0.1" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar ? "" : "disabled"} /></td>`).join("")}
+                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" inputmode="decimal" min="0" max="10" step="0.1" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar ? "" : "disabled"} /></td>`).join("")}
                   <td class="text-center font-semibold" id="calFinal_${a.id}">${calcularFinal(a.id, criteriosPeriodo).toFixed(1)}</td>
                 </tr>`).join("")}
             </tbody>
@@ -2441,16 +2452,6 @@ function renderCalificaciones(main) {
 
       document.querySelectorAll(".calPeriodoBtn").forEach(b => b.addEventListener("click", () => { periodoActivo = b.dataset.p; pintar(); }));
 
-      const btnNuevoPeriodo = document.getElementById("calNuevoPeriodoBtn");
-      if (btnNuevoPeriodo) btnNuevoPeriodo.addEventListener("click", () => {
-        const nombre = prompt("Nombre del nuevo periodo (ej. Parcial 1, Bimestre 2):");
-        if (nombre && nombre.trim()) {
-          periodoActivo = nombre.trim();
-          if (!periodos.includes(periodoActivo)) periodos.push(periodoActivo);
-          pintar();
-        }
-      });
-
       if (puedeEditar && periodoActivo) {
         const btnAgregar = document.getElementById("calAgregarCriterioBtn");
         if (btnAgregar) btnAgregar.addEventListener("click", async () => {
@@ -2458,11 +2459,22 @@ function renderCalificaciones(main) {
           const pond = Number(document.getElementById("calCriterioPond").value);
           const msg = document.getElementById("calCriterioMsg");
           msg.innerHTML = "";
+          if (guardandoCriterio) return;
           if (!nombre || !pond || pond <= 0 || pond > 100) { msg.innerHTML = errBox("Escribe un nombre y un porcentaje válido (1-100)."); return; }
+          if (criteriosPeriodo.some(c => c.nombre.trim().toLowerCase() === nombre.toLowerCase())) {
+            msg.innerHTML = errBox(`Ya existe un criterio llamado "${escHtml(nombre)}" en este periodo.`); return;
+          }
+          if (sumaPonderacion + pond > 100) {
+            msg.innerHTML = errBox(`No se puede agregar: la suma sería ${sumaPonderacion + pond}% y el máximo es 100%. Solo quedan ${100 - sumaPonderacion}% disponibles.`); return;
+          }
+          guardandoCriterio = true;
+          btnAgregar.disabled = true;
+          btnAgregar.style.opacity = "0.5";
           const { data, error } = await sb.from("criterios_evaluacion").insert({
             asignacion_id: asignacion.id, periodo: periodoActivo, nombre, ponderacion: pond, orden: criteriosPeriodo.length,
           }).select().single();
-          if (error) { msg.innerHTML = errBox(error.message); return; }
+          guardandoCriterio = false;
+          if (error) { btnAgregar.disabled = false; btnAgregar.style.opacity = "1"; msg.innerHTML = errBox(escHtml(error.message)); return; }
           criterios.push(data);
           pintar();
         });
@@ -2504,6 +2516,9 @@ function renderCalificaciones(main) {
           const msg = document.getElementById("calGuardarMsg");
           msg.innerHTML = "";
           const inputs = document.querySelectorAll(".calValorInput");
+          if ([...inputs].some(i => i.value !== "" && (Number(i.value) < 0 || Number(i.value) > 10))) {
+            msg.innerHTML = errBox("Todas las calificaciones deben estar entre 0 y 10."); return;
+          }
           const filas = [...inputs].filter(i => i.value !== "").map(i => ({
             criterio_id: i.dataset.criterio, alumno_id: i.dataset.alumno, valor: Number(i.value),
           }));
@@ -2514,6 +2529,11 @@ function renderCalificaciones(main) {
         });
 
         document.querySelectorAll(".calValorInput").forEach(inp => inp.addEventListener("input", () => {
+          if (inp.value !== "") {
+            const n = Number(inp.value);
+            if (n > 10) inp.value = "10";
+            else if (n < 0) inp.value = "0";
+          }
           const alumnoId = inp.dataset.alumno;
           valoresCache[alumnoId] = valoresCache[alumnoId] || {};
           valoresCache[alumnoId][inp.dataset.criterio] = Number(inp.value) || 0;
