@@ -803,19 +803,21 @@ function renderAlumnos(main) {
       <div class="max-w-2xl">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
           <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nuevo ciclo escolar</p>
-          <div class="grid grid-cols-4 gap-2 mb-2">
-            <select id="ccNivel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
-              <option value="Secundaria">Secundaria (anual)</option>
-              <option value="Preparatoria">Preparatoria (semestral)</option>
-            </select>
-            <input id="ccNombre" placeholder="Ej. 2026-2027 o 2026-2027 Sem 1" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            ${["Inicia", "Termina"].map((rot, k) => { const p = k === 0 ? "ccIni" : "ccFin"; const anioBase = new Date().getFullYear(); return `
-            <div><label class="block text-xs mb-0.5" style="color:#6C7B8A">${rot} (mes y año)</label>
-              <div class="flex gap-1">
-                <select id="${p}Mes" class="flex-1 px-1 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5"><option value="">Mes</option>${["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m, i) => `<option value="${String(i + 1).padStart(2, "0")}">${m}</option>`).join("")}</select>
-                <select id="${p}Anio" class="flex-1 px-1 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5"><option value="">Año</option>${[-1, 0, 1, 2, 3].map(d => `<option value="${anioBase + d}">${anioBase + d}</option>`).join("")}</select>
-              </div></div>`; }).join("")}
-          </div>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
+          <select id="ccNivel" class="w-full px-2 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
+            <option value="Secundaria">Secundaria (anual)</option>
+            <option value="Preparatoria">Preparatoria (semestral)</option>
+          </select>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nombre del ciclo</label>
+          <input id="ccNombre" placeholder="Ej. 2026-2027 o 2026-2027 Sem 1" class="w-full px-2 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          ${[["ccIni", "Inicio del ciclo"], ["ccFin", "Fin del ciclo"]].map(([p, rot]) => { const anioBase = new Date().getFullYear(); return `
+          <div class="p-2 rounded-lg mb-2" style="background:#F7F5EF">
+            <p class="text-xs font-semibold mb-1" style="color:#1E3A8A">${rot}</p>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="${p}Mes" class="w-full px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5; background:#fff"><option value="">Mes</option>${["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m, i) => `<option value="${String(i + 1).padStart(2, "0")}">${m}</option>`).join("")}</select>
+              <select id="${p}Anio" class="w-full px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5; background:#fff"><option value="">Año</option>${[-1, 0, 1, 2, 3].map(d => `<option value="${anioBase + d}">${anioBase + d}</option>`).join("")}</select>
+            </div>
+          </div>`; }).join("")}
           <div id="ccMsg"></div>
           <button id="ccGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
         </div>
@@ -993,7 +995,7 @@ function renderAlumnos(main) {
 
     document.getElementById("alBuscarBtn").addEventListener("click", buscarAlumnos);
     document.getElementById("alBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscarAlumnos(); });
-    document.getElementById("alNuevoBtn").addEventListener("click", mostrarFormularioAlumno);
+    document.getElementById("alNuevoBtn").addEventListener("click", () => mostrarFormularioAlumno(null));
 
     buscarAlumnos();
 
