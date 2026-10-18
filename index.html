@@ -28,6 +28,7 @@
     body * { visibility: hidden; }
     .ib-imprimible, .ib-imprimible * { visibility: visible; }
     .ib-imprimible { position: absolute; top: 0; left: 0; }
+    .ib-imprimible .no-print { display: none !important; }
   }
 </style>
 </head>
@@ -64,7 +65,7 @@ const MENU = [
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: true },
-  { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: false },
+  { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: true },
   { id: "disciplina", label: "Disciplina", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "avisos", label: "Avisos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "mobiliario", label: "Inventario/Mobiliario", roles: ["Administrador", "Director", "Secretaria"], construido: true },
@@ -440,6 +441,7 @@ function renderSeccion() {
   if (state.seccion === "oficios") return renderOficios(main);
   if (state.seccion === "disciplina") return renderDisciplina(main);
   if (state.seccion === "avisos") return renderAvisos(main);
+  if (state.seccion === "pagos") return renderColegiaturas(main);
 
   const modulo = MENU.find(m => m.id === state.seccion);
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
@@ -1103,7 +1105,7 @@ function renderAlumnos(main) {
           <div id="naMsg"></div>
           <div class="flex gap-2">
             <button id="naCancelar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
-            ${esEdicion ? `<button id="naConsentBtn" type="button" class="flex-1 py-2 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Imprimir aviso de privacidad (escaneo facial)</button>` : ""}
+            ${esEdicion ? `<button id="naConsentBtn" type="button" class="flex-1 py-2 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Aviso de privacidad y reglamento</button>` : ""}
             <button id="naGuardar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">${esEdicion ? "Guardar cambios" : "Guardar alumno"}</button>
           </div>
         </div>`;
@@ -1128,7 +1130,7 @@ function renderAlumnos(main) {
         const g = inscripcionExistente?.grupos;
         mostrarConsentimientoFacial(wrap, {
           alumnoNombre: nombreCompletoAlumno(alumnoExistente), matricula: alumnoExistente.matricula || "",
-          grupoTxt: g ? `${g.grados?.nombre || ""} "${g.letra}" (${g.grados?.nivel || ""})` : "", nivel: g?.grados?.nivel || "",
+          grupoTxt: g ? `${g.grados?.nombre || ""} "${g.letra}" (${g.grados?.nivel || ""})` : "", nivel: g?.grados?.nivel || "", alumnoId: alumnoExistente.id,
           tutorNombre: tutorExistente.nombre_completo, tutorParentesco: tutorExistente.parentesco,
         }, () => mostrarFormularioAlumno(alumnoExistente));
       });
@@ -1233,7 +1235,7 @@ function renderAlumnos(main) {
           await mostrarConsentimientoFacial(wrap, {
             alumnoNombre: nombreCompletoAlumno({ nombres, apellido_paterno: apPat, apellido_materno: datosAlumno.apellido_materno }),
             matricula: matriculaNueva,
-            grupoTxt: opcGrupo ? `${opcGrupo}${nivelTxt ? " (" + nivelTxt + ")" : ""}` : "", nivel: nivelTxt,
+            grupoTxt: opcGrupo ? `${opcGrupo}${nivelTxt ? " (" + nivelTxt + ")" : ""}` : "", nivel: nivelTxt, alumnoId,
             tutorNombre: t1.nombre_completo, tutorParentesco: t1.parentesco,
           });
           return;
@@ -2226,14 +2228,70 @@ async function renderReporteAusencias(cont) {
 // ============================================================
 // Aviso de privacidad y consentimiento de reconocimiento facial
 // ============================================================
+// ---------- Reglamento escolar ----------
+// Texto base propuesto. Se puede editar en Oficios y Documentos > Reglamento escolar (queda guardado en la base de datos).
+// Formato: líneas que empiezan con "## " son títulos; el resto son párrafos.
+function reglamentoPorDefecto(nivel) {
+  const alumnoTxt = nivel === "Preparatoria" ? "estudiantes de Preparatoria" : "alumnos de Secundaria";
+  return `## I. Disposiciones generales
+El presente reglamento tiene por objeto regular la convivencia, el orden y el buen funcionamiento de Juan Bosco ${nivel || ""}. Es de observancia obligatoria para todos los ${alumnoTxt} y para sus padres, madres o tutores desde el momento de la inscripción.
+La inscripción implica el conocimiento y la aceptación de este reglamento. La Dirección podrá actualizarlo y lo dará a conocer oportunamente a los padres de familia.
+
+## II. Asistencia y puntualidad
+El alumno debe asistir puntualmente a todas sus clases y actividades escolares. La entrada y salida de las instalaciones se registra en el control de acceso del plantel.
+Las inasistencias deberán justificarse por el padre, madre o tutor ante la Dirección o Secretaría, de preferencia el mismo día o a más tardar al reincorporarse.
+Los retardos y las inasistencias reiteradas podrán afectar la evaluación y serán comunicados a los padres de familia.
+
+## III. Uniforme y presentación personal
+El alumno debe presentarse aseado y con el uniforme completo que establezca el plantel, tanto en clases como en actividades oficiales.
+Cualquier excepción deberá ser autorizada por la Dirección.
+
+## IV. Conducta y disciplina
+Se espera un trato respetuoso hacia compañeros, docentes, personal y visitantes, así como el cuidado de las instalaciones, el mobiliario y los materiales.
+Están prohibidos: las agresiones físicas o verbales, el acoso o intimidación (incluso por medios digitales), el robo, el daño a bienes del plantel o de terceros, la introducción o consumo de tabaco, alcohol o sustancias ilegales, y portar objetos que pongan en riesgo la seguridad de las personas.
+Las faltas se atenderán de forma progresiva: aviso a los padres de familia en faltas leves; citatorio y reunión con acuerdos en faltas graves, que quedarán por escrito y firmados por el tutor, la Dirección y un testigo. Las faltas graves o reiteradas podrán dar lugar a las sanciones que determine la Dirección, hasta la suspensión o baja del plantel, respetando siempre el derecho del alumno y de su familia a ser escuchados.
+
+## V. Evaluación académica
+La evaluación se realiza conforme a los criterios que cada docente da a conocer al inicio de cada periodo. Las calificaciones se expresan en escala de 0 a 10.
+El alumno debe cumplir con tareas, trabajos y evaluaciones en las fechas indicadas. Cualquier conducta deshonesta (copia, plagio o suplantación) será sancionada.
+
+## VI. Uso de teléfonos celulares y tecnología
+El uso de celulares y dispositivos electrónicos durante las clases solo se permite con autorización del docente y con fines académicos. El plantel no se responsabiliza por la pérdida o daño de objetos personales.
+
+## VII. Seguridad y salidas
+Ningún alumno podrá salir de las instalaciones durante el horario escolar sin autorización de la Dirección y, de ser necesario, la presencia o autorización del padre, madre o tutor. Al finalizar la jornada, los alumnos serán entregados a las personas autorizadas por la familia.
+
+## VIII. Pagos y colegiaturas
+Los padres, madres o tutores se obligan a cubrir la inscripción, la cuota inicial y las colegiaturas en las fechas y términos que establezca el plantel para el ciclo escolar. El incumplimiento reiterado en los pagos podrá generar los efectos que señale el plantel conforme a la normatividad aplicable.
+
+## IX. Compromisos de padres, madres y tutores
+Mantener comunicación con el plantel, mantener actualizados sus datos de contacto, atender los citatorios y reuniones, apoyar el cumplimiento de este reglamento y participar en la formación del alumno.
+
+## X. Casos no previstos
+Cualquier situación no prevista en este reglamento será resuelta por la Dirección del plantel.`;
+}
+async function cargarReglamento(nivel) {
+  try {
+    const { data } = await sb.from("reglamento_escolar").select("contenido, version").eq("nivel", nivel || "").maybeSingle();
+    if (data && data.contenido && data.contenido.trim()) return { contenido: data.contenido, version: data.version || 1, personalizado: true };
+  } catch (e) { /* tabla aún no creada: se usa el texto base */ }
+  return { contenido: reglamentoPorDefecto(nivel), version: 0, personalizado: false };
+}
+function reglamentoHtml(texto) {
+  return String(texto).split("\n").map(l => l.trim()).filter(Boolean).map(l =>
+    l.startsWith("## ") ? `<p class="text-xs font-bold mt-3" style="color:#1E3A8A">${escHtml(l.slice(3))}</p>` : `<p class="text-xs" style="text-align:justify; margin-top:3px">${escHtml(l)}</p>`).join("");
+}
+
 async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
   const membrete = await cargarMembrete(datos.nivel);
+  const reg = await cargarReglamento(datos.nivel);
   const nombreAl = datos.alumnoNombre;
   const hoy = fechaLarga(new Date());
   destino.innerHTML = `
     <div class="mt-3">
-      ${okBox("Alumno guardado. Imprime el aviso de privacidad para que el padre, madre o tutor firme la autorización del escaneo facial.")}
-      <div id="ibConsentimientoImprimible" class="ib-imprimible p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px; color:#1C2B3A">
+      ${okBox("Alumno guardado. Imprime el aviso de privacidad y el reglamento para que el padre, madre o tutor los firme.")}
+      <div id="ibConsentimientoImprimible" class="ib-imprimible" style="width:100%; max-width:760px; color:#1C2B3A">
+       <div class="p-6 rounded-xl bg-white border" style="border-color:#E1DED5">
         ${membreteHtml(membrete)}
         <h3 class="text-sm font-bold text-center mb-1" style="color:#1E3A8A">AVISO DE PRIVACIDAD Y CONSENTIMIENTO PARA EL TRATAMIENTO DE DATOS PERSONALES BIOMÉTRICOS</h3>
         <p class="text-xs text-center mb-3" style="color:#6C7B8A">Reconocimiento facial para el registro de entradas y salidas</p>
@@ -2257,13 +2315,60 @@ async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del padre, madre o tutor<br><span style="color:#6C7B8A">${escHtml(datos.tutorNombre)}</span></div>
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Recibe por el plantel<br><span style="color:#6C7B8A">Nombre y firma</span></div>
         </div>
+       </div>
+       <div class="p-6 rounded-xl bg-white border mt-3" style="border-color:#E1DED5; page-break-before:always">
+        ${membreteHtml(membrete)}
+        <h3 class="text-sm font-bold text-center mb-3" style="color:#1E3A8A">REGLAMENTO ESCOLAR</h3>
+        ${reglamentoHtml(reg.contenido)}
+        <p class="text-sm mt-4" style="text-align:justify">Yo, <strong>${escHtml(datos.tutorNombre)}</strong>${datos.tutorParentesco ? `, ${escHtml(datos.tutorParentesco)}` : ""} del alumno(a) <strong>${escHtml(nombreAl)}</strong>, manifiesto que recibí, leí y estoy de enterado(a) del presente Reglamento Escolar, y me comprometo a cumplirlo y a hacerlo cumplir.</p>
+        <p class="text-xs text-right mt-2">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${hoy}.</p>
+        <div class="flex justify-between mt-12 text-xs text-center">
+          <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del padre, madre o tutor<br><span style="color:#6C7B8A">${escHtml(datos.tutorNombre)}</span></div>
+          <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del alumno(a)<br><span style="color:#6C7B8A">${escHtml(nombreAl)}</span></div>
+        </div>
+       </div>
       </div>
+      ${datos.alumnoId ? `
+      <div class="p-4 rounded-xl bg-white border mt-3" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Registrar en el expediente del alumno</p>
+        <p class="text-xs mb-2" style="color:#6C7B8A">Cuando el tutor entregue los documentos firmados, márcalos aquí. El original firmado se guarda en el expediente físico.</p>
+        <label class="flex items-center gap-2 text-sm mb-1"><input type="checkbox" id="cfExpReg" /> Reglamento escolar firmado</label>
+        <label class="flex items-center gap-2 text-sm mb-1"><input type="checkbox" id="cfExpAviso" /> Aviso de privacidad firmado</label>
+        <div id="cfExpFacialWrap" class="ml-6 mb-2 text-sm" style="display:none">
+          Escaneo facial:
+          <label class="ml-2"><input type="radio" name="cfFacial" value="si" /> SÍ autoriza</label>
+          <label class="ml-2"><input type="radio" name="cfFacial" value="no" /> NO autoriza</label>
+        </div>
+        <div id="cfExpMsg"></div>
+        <button id="cfExpGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Registrar en expediente</button>
+      </div>` : ""}
       <div class="flex gap-2 mt-3">
-        <button id="cfImprimir" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>
+        <button id="cfImprimir" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir aviso y reglamento</button>
         <button id="cfCerrar" class="px-4 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cerrar</button>
       </div>
     </div>`;
   document.getElementById("cfImprimir").addEventListener("click", () => window.print());
+  const expBtn = document.getElementById("cfExpGuardar");
+  if (expBtn) {
+    const chkAviso = document.getElementById("cfExpAviso");
+    chkAviso.addEventListener("change", () => { document.getElementById("cfExpFacialWrap").style.display = chkAviso.checked ? "" : "none"; });
+    expBtn.addEventListener("click", async () => {
+      const msg = document.getElementById("cfExpMsg");
+      const filas = [];
+      const hoyISO = fechaLocalISO(new Date());
+      if (document.getElementById("cfExpReg").checked) filas.push({ alumno_id: datos.alumnoId, tipo: "Reglamento escolar", version: reg.version, fecha: hoyISO, registrado_por: state.perfil.id });
+      if (chkAviso.checked) {
+        const f = document.querySelector('input[name="cfFacial"]:checked');
+        if (!f) { msg.innerHTML = errBox("Indica si el tutor SÍ o NO autoriza el escaneo facial."); return; }
+        filas.push({ alumno_id: datos.alumnoId, tipo: "Aviso de privacidad", autoriza_facial: f.value === "si", fecha: hoyISO, registrado_por: state.perfil.id });
+      }
+      if (!filas.length) { msg.innerHTML = errBox("Marca al menos un documento."); return; }
+      expBtn.disabled = true;
+      const { error } = await sb.from("documentos_firmados").insert(filas);
+      expBtn.disabled = false;
+      msg.innerHTML = error ? errBox(escHtml(error.message)) : okBox("Registrado en el expediente.");
+    });
+  }
   document.getElementById("cfCerrar").addEventListener("click", () => { destino.innerHTML = ""; if (alCerrar) alCerrar(); });
   destino.scrollIntoView({ behavior: "smooth" });
 }
@@ -2736,6 +2841,678 @@ async function renderAvisoPrivacidad(main) {
   }
 
   pintar();
+}
+
+// ============================================================
+// Módulo Pagos y Colegiaturas
+// ============================================================
+const COL_CONCEPTOS = ["Inscripción", "Cuota inicial", "Colegiatura mensual", "Colegiatura bimestral", "Ciclo completo"];
+const COL_DIA_VENCIMIENTO = 10; // día del mes en que vence cada colegiatura
+const COL_FORMAS = ["Efectivo", "Transferencia", "Depósito", "Tarjeta", "Cheque"];
+const COL_MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const mxn = n => Number(n || 0).toLocaleString("es-MX", { style: "currency", currency: "MXN" });
+
+function colMesesDelCiclo(ciclo) {
+  const [y1, m1] = ciclo.fecha_inicio.split("-").map(Number);
+  const [y2, m2] = ciclo.fecha_fin.split("-").map(Number);
+  const out = [];
+  let y = y1, m = m1;
+  while (y < y2 || (y === y2 && m <= m2)) { out.push({ y, m }); m++; if (m > 12) { m = 1; y++; } }
+  return out;
+}
+const colFecha = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+// Porcentaje de exención que aplica a un concepto (el mayor de las vigentes). "Otro" nunca se exenta automáticamente.
+function colPorcentaje(exenciones, concepto, cicloId) {
+  if (concepto === "Otro") return 0;
+  const grupo = concepto.startsWith("Colegiatura") || concepto === "Ciclo completo" ? "Colegiatura" : concepto;
+  let max = 0;
+  (exenciones || []).forEach(e => {
+    if (e.activo === false) return;
+    if (e.ciclo_escolar_id && e.ciclo_escolar_id !== cicloId) return;
+    if (e.concepto && e.concepto !== grupo) return;
+    max = Math.max(max, Number(e.porcentaje));
+  });
+  return max;
+}
+
+// Construye los cargos de un alumno para un ciclo. tarifas: { concepto: monto }.
+function colConstruirCargos(alumnoId, ciclo, modalidad, tarifas, exenciones) {
+  const filas = [];
+  const meses = colMesesDelCiclo(ciclo);
+  const [y0, m0] = ciclo.fecha_inicio.split("-").map(Number);
+  const agregar = (concepto, descripcion, venc, orden) => {
+    const base = Number(tarifas[concepto]);
+    if (!(base > 0)) return;
+    const pct = colPorcentaje(exenciones, concepto, ciclo.id);
+    const desc = Math.round(base * pct) / 100;
+    filas.push({ alumno_id: alumnoId, ciclo_escolar_id: ciclo.id, concepto, descripcion, orden, fecha_vencimiento: venc,
+      monto_original: base, descuento: desc, monto: Math.round((base - desc) * 100) / 100 });
+  };
+  agregar("Inscripción", "Inscripción", colFecha(y0, m0, 1), 0);
+  agregar("Cuota inicial", "Cuota inicial", colFecha(y0, m0, 1), 1);
+  if (modalidad === "Mensual") {
+    meses.forEach((x, i) => agregar("Colegiatura mensual", `Colegiatura ${COL_MESES[x.m - 1]} ${x.y}`, colFecha(x.y, x.m, COL_DIA_VENCIMIENTO), 10 + i));
+  } else if (modalidad === "Bimestral") {
+    for (let i = 0; i < meses.length; i += 2) {
+      const a = meses[i], b = meses[i + 1];
+      const rango = b ? `${COL_MESES[a.m - 1]}–${COL_MESES[b.m - 1]} ${b.y}` : `${COL_MESES[a.m - 1]} ${a.y}`;
+      agregar("Colegiatura bimestral", `Colegiatura bimestre ${i / 2 + 1} (${rango})`, colFecha(a.y, a.m, COL_DIA_VENCIMIENTO), 10 + i / 2);
+    }
+  } else {
+    agregar("Ciclo completo", "Colegiatura del ciclo completo", colFecha(y0, m0, COL_DIA_VENCIMIENTO), 10);
+  }
+  return filas;
+}
+
+function colALetras(n) {
+  const U = ["", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "once", "doce", "trece", "catorce", "quince",
+    "dieciséis", "diecisiete", "dieciocho", "diecinueve", "veinte", "veintiuno", "veintidós", "veintitrés", "veinticuatro", "veinticinco", "veintiséis", "veintisiete", "veintiocho", "veintinueve"];
+  const D = ["", "", "", "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta", "noventa"];
+  const C = ["", "ciento", "doscientos", "trescientos", "cuatrocientos", "quinientos", "seiscientos", "setecientos", "ochocientos", "novecientos"];
+  const menor1000 = x => {
+    if (x === 100) return "cien";
+    let t = "";
+    const c = Math.floor(x / 100), r = x % 100;
+    if (c) t += C[c] + " ";
+    if (r < 30) t += U[r];
+    else { t += D[Math.floor(r / 10)]; if (r % 10) t += " y " + U[r % 10]; }
+    return t.trim();
+  };
+  const entero = Math.floor(n);
+  const cent = Math.round((n - entero) * 100);
+  let txt;
+  if (entero === 0) txt = "cero";
+  else {
+    const mill = Math.floor(entero / 1000000), mil = Math.floor((entero % 1000000) / 1000), resto = entero % 1000;
+    const partes = [];
+    if (mill) partes.push(mill === 1 ? "un millón" : menor1000(mill) + " millones");
+    if (mil) partes.push(mil === 1 ? "mil" : menor1000(mil).replace(/uno$/, "un").replace(/veintiun$/, "veintiún") + " mil");
+    if (resto) partes.push(menor1000(resto));
+    txt = partes.join(" ");
+  }
+  if (entero >= 1000000 && entero % 1000000 === 0) txt += " de";
+  return (txt.charAt(0).toUpperCase() + txt.slice(1)) + ` pesos ${String(cent).padStart(2, "0")}/100 M.N.`;
+}
+
+async function colTraerTodo(mk) {
+  const out = [];
+  for (let i = 0; ; i += 1000) {
+    const { data, error } = await mk().range(i, i + 999);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+
+function renderColegiaturas(main) {
+  const esAdmin = state.perfil.rol === "Administrador";
+  let tabActivo = "cobranza";
+  const $ = id => document.getElementById(id);
+  const nombreCiclo = c => `${c.nivel} · ${c.nombre}`;
+  let ciclosCache = null;
+  async function ciclos() {
+    if (!ciclosCache) {
+      const { data, error } = await sb.from("ciclos_escolares").select("*").order("fecha_inicio", { ascending: false });
+      if (error) throw error;
+      ciclosCache = data || [];
+    }
+    return ciclosCache;
+  }
+
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Pagos y Colegiaturas</h2>
+    <div class="flex gap-1 mb-4 flex-wrap">
+      <button class="coTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="cobranza">Cobranza</button>
+      <button class="coTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="adeudos">Adeudos</button>
+      <button class="coTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="corte">Corte de caja</button>
+      <button class="coTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="generar">Generar cargos</button>
+      <button class="coTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="tarifas">Tarifas</button>
+      <button class="coTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="exenciones">Exenciones y becas</button>
+    </div>
+    <div id="coContenido" class="max-w-4xl"></div>`;
+  function pintarTabs() {
+    document.querySelectorAll(".coTab").forEach(b => {
+      const a = b.dataset.tab === tabActivo;
+      b.style.background = a ? "#1E3A8A" : "#F4F1EB"; b.style.color = a ? "#fff" : "#1E3A8A";
+    });
+  }
+  document.querySelectorAll(".coTab").forEach(b => b.addEventListener("click", () => { tabActivo = b.dataset.tab; abrir(); }));
+  function abrir() {
+    pintarTabs();
+    const c = $("coContenido");
+    c.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const f = { cobranza: tabCobranza, adeudos: tabAdeudos, corte: tabCorte, generar: tabGenerar, tarifas: tabTarifas, exenciones: tabExenciones }[tabActivo];
+    f(c).catch(e => { c.innerHTML = errBox(escHtml(e.message || String(e))); });
+  }
+
+  // ---- Selector de alumno reutilizable ----
+  function selectorAlumno(cont, alElegir) {
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <div class="flex gap-2">
+          <input class="coBuscarInput flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" placeholder="Buscar alumno por nombre o matrícula…" />
+          <button class="coBuscarBtn px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+        </div>
+        <div class="coBuscarRes mt-2"></div>
+      </div>`;
+    const inp = cont.querySelector(".coBuscarInput"), res = cont.querySelector(".coBuscarRes");
+    async function buscar() {
+      const crit = inp.value.trim().replace(/[,()%*]/g, " ").trim();
+      if (!crit) { res.innerHTML = ""; return; }
+      const { data, error } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula")
+        .or(`nombres.ilike.%${crit}%,apellido_paterno.ilike.%${crit}%,apellido_materno.ilike.%${crit}%,matricula.ilike.%${crit}%`).order("apellido_paterno").limit(20);
+      if (error) { res.innerHTML = errBox(escHtml(error.message)); return; }
+      const lista = data || [];
+      res.innerHTML = lista.length ? lista.map((a, i) => `<button class="coSel w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A">${escHtml(nombreCompletoAlumno(a))} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})</span></button>`).join("") : `<p class="text-xs" style="color:#6C7B8A">Sin resultados.</p>`;
+      res.querySelectorAll(".coSel").forEach(b => b.addEventListener("click", () => { res.innerHTML = ""; inp.value = nombreCompletoAlumno(lista[Number(b.dataset.i)]); alElegir(lista[Number(b.dataset.i)]); }));
+    }
+    cont.querySelector(".coBuscarBtn").addEventListener("click", buscar);
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+  }
+
+  async function tarifasDeCiclo(cicloId) {
+    const { data, error } = await sb.from("tarifas").select("concepto, monto").eq("ciclo_escolar_id", cicloId);
+    if (error) throw error;
+    const t = {};
+    (data || []).forEach(r => { t[r.concepto] = Number(r.monto); });
+    return t;
+  }
+  async function exencionesDeAlumno(alumnoId) {
+    const { data, error } = await sb.from("exenciones").select("*").eq("alumno_id", alumnoId).eq("activo", true);
+    if (error) throw error;
+    return data || [];
+  }
+
+  // ======================= COBRANZA =======================
+  async function tabCobranza(cont) {
+    cont.innerHTML = `<div id="coSelAl"></div><div id="coCuenta"></div>`;
+    selectorAlumno($("coSelAl"), cargarCuenta);
+  }
+
+  async function cargarCuenta(alumno, cicloIdElegido) {
+    const caja = $("coCuenta");
+    caja.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando estado de cuenta…</p>`;
+    const { data: inscs, error } = await sb.from("inscripciones")
+      .select("ciclo_escolar_id, grupos(letra, grados(nombre, nivel)), ciclos_escolares(id, nombre, nivel, fecha_inicio, fecha_fin)").eq("alumno_id", alumno.id);
+    if (error) { caja.innerHTML = errBox(escHtml(error.message)); return; }
+    const lista = (inscs || []).filter(i => i.ciclos_escolares).sort((a, b) => b.ciclos_escolares.fecha_inicio.localeCompare(a.ciclos_escolares.fecha_inicio));
+    if (!lista.length) { caja.innerHTML = errBox("Este alumno no tiene inscripción a ningún ciclo."); return; }
+    const insc = lista.find(i => i.ciclo_escolar_id === cicloIdElegido) || lista[0];
+    const ciclo = insc.ciclos_escolares;
+
+    const [cargosRes, planRes, exs, tarifas, membrete] = await Promise.all([
+      sb.from("cargos_saldo").select("*").eq("alumno_id", alumno.id).eq("ciclo_escolar_id", ciclo.id).eq("cancelado", false).order("orden").order("fecha_vencimiento"),
+      sb.from("planes_pago").select("modalidad").eq("alumno_id", alumno.id).eq("ciclo_escolar_id", ciclo.id).maybeSingle(),
+      exencionesDeAlumno(alumno.id), tarifasDeCiclo(ciclo.id), cargarMembrete(ciclo.nivel),
+    ]);
+    if (cargosRes.error) { caja.innerHTML = errBox(escHtml(cargosRes.error.message)); return; }
+    const cargos = cargosRes.data || [];
+    const modalidad = planRes.data?.modalidad || "Mensual";
+    const hoy = fechaLocalISO(new Date());
+    const grupoTxt = insc.grupos ? `${insc.grupos.grados?.nombre || ""} "${insc.grupos.letra}"` : "";
+    const exAplica = exs.filter(e => !e.ciclo_escolar_id || e.ciclo_escolar_id === ciclo.id);
+    const totalSaldo = cargos.reduce((t, c) => t + Number(c.saldo), 0);
+
+    const estado = c => {
+      if (Number(c.monto) === 0) return ["Exento", "#3F7A5E"];
+      if (Number(c.saldo) <= 0.004) return ["Pagado", "#3F7A5E"];
+      if (c.fecha_vencimiento < hoy) return [Number(c.pagado) > 0 ? "Parcial vencido" : "Vencido", "#B5453A"];
+      return [Number(c.pagado) > 0 ? "Parcial" : "Pendiente", "#B7791F"];
+    };
+
+    caja.innerHTML = `
+      <div id="coEdoImprimible" class="ib-imprimible p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5; color:#1C2B3A">
+        <div class="flex justify-between flex-wrap gap-2 mb-2">
+          <div>
+            <p class="text-base font-bold" style="color:#1E3A8A">${escHtml(nombreCompletoAlumno(alumno))}</p>
+            <p class="text-xs" style="color:#6C7B8A">${escHtml(alumno.matricula || "")} · ${escHtml(grupoTxt)} · ${escHtml(membrete.nombre)}</p>
+          </div>
+          <div class="no-print">
+            ${lista.length > 1 ? `<select id="coCicloSel" class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5">${lista.map(i => `<option value="${i.ciclo_escolar_id}" ${i.ciclo_escolar_id === ciclo.id ? "selected" : ""}>${escHtml(nombreCiclo(i.ciclos_escolares))}</option>`).join("")}</select>` : `<p class="text-xs" style="color:#6C7B8A">Ciclo: ${escHtml(nombreCiclo(ciclo))}</p>`}
+          </div>
+        </div>
+        ${exAplica.length ? `<div class="p-2 rounded-lg text-xs mb-2" style="background:#E6F0EA; color:#2F5E48">Exención vigente: ${exAplica.map(e => `${Number(e.porcentaje)}% en ${escHtml(e.concepto || "todos los cobros")} — ${escHtml(e.motivo)}`).join("; ")}</div>` : ""}
+        ${cargos.length === 0 ? `
+          <div class="no-print">
+            <p class="text-sm mb-2" style="color:#6C7B8A">Aún no hay cargos para este ciclo.</p>
+            <div class="flex gap-2 items-center flex-wrap">
+              <label class="text-xs" style="color:#6C7B8A">Modalidad de pago de colegiatura</label>
+              <select id="coModalidad" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5">
+                ${["Mensual", "Bimestral", "Ciclo completo"].map(m => `<option ${m === modalidad ? "selected" : ""}>${m}</option>`).join("")}
+              </select>
+              <button id="coGenerar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Generar cargos</button>
+            </div>
+            ${Object.keys(tarifas).length === 0 ? `<p class="text-xs mt-2" style="color:#B5453A">Este ciclo no tiene tarifas. Captúralas en la pestaña Tarifas.</p>` : ""}
+            <div id="coGenMsg" class="mt-2"></div>
+          </div>` : `
+          <p class="text-xs mb-2" style="color:#6C7B8A">Modalidad: <strong>${escHtml(modalidad)}</strong></p>
+          <div style="overflow-x:auto"><table class="w-full text-xs" style="border-collapse:collapse">
+            <thead><tr style="background:#F4F1EB; text-align:left"><th class="p-1.5">Concepto</th><th class="p-1.5">Vence</th><th class="p-1.5 text-right">Monto</th><th class="p-1.5 text-right">Pagado</th><th class="p-1.5 text-right">Saldo</th><th class="p-1.5">Estado</th><th class="p-1.5 no-print"></th></tr></thead>
+            <tbody>
+            ${cargos.map(c => { const [e, col] = estado(c); return `<tr style="border-top:1px solid #E1DED5">
+              <td class="p-1.5">${escHtml(c.descripcion)}</td>
+              <td class="p-1.5">${fechaLarga(c.fecha_vencimiento + "T12:00:00")}</td>
+              <td class="p-1.5 text-right">${Number(c.descuento) > 0 ? `<span style="text-decoration:line-through; color:#6C7B8A">${mxn(c.monto_original)}</span><br>` : ""}${mxn(c.monto)}</td>
+              <td class="p-1.5 text-right">${mxn(c.pagado)}</td>
+              <td class="p-1.5 text-right font-semibold">${mxn(c.saldo)}</td>
+              <td class="p-1.5" style="color:${col}; font-weight:600">${e}</td>
+              <td class="p-1.5 no-print">${Number(c.saldo) > 0.004 ? `<button class="coPagar px-2 py-1 rounded-lg text-xs font-bold" data-id="${c.id}" style="background:#3F7A5E; color:#fff">Cobrar</button>` : ""}</td>
+            </tr>`; }).join("")}
+            </tbody>
+          </table></div>
+          <p class="text-sm font-bold text-right mt-2" style="color:#1E3A8A">Saldo pendiente total: ${mxn(totalSaldo)}</p>`}
+      </div>
+      <div id="coAcciones" class="flex gap-2 flex-wrap mb-3">
+        ${cargos.length ? `<button id="coImprimirEdo" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Imprimir estado de cuenta</button>` : ""}
+        <button id="coAddCargo" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Agregar otro cargo</button>
+        ${cargos.length && exAplica.length ? `<button id="coReexentar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Aplicar exenciones a cargos sin pagos</button>` : ""}
+      </div>
+      <div id="coForm"></div>
+      <div id="coPagosHist"></div>
+      <div id="coRecibo"></div>`;
+
+    const recargar = () => cargarCuenta(alumno, ciclo.id);
+    const sel = $("coCicloSel");
+    if (sel) sel.addEventListener("change", () => cargarCuenta(alumno, sel.value));
+
+    const gen = $("coGenerar");
+    if (gen) gen.addEventListener("click", async () => {
+      const mod = $("coModalidad").value;
+      if (Object.keys(tarifas).length === 0) { $("coGenMsg").innerHTML = errBox("Primero captura las tarifas del ciclo."); return; }
+      gen.disabled = true;
+      const filas = colConstruirCargos(alumno.id, ciclo, mod, tarifas, exs);
+      if (!filas.length) { gen.disabled = false; $("coGenMsg").innerHTML = errBox("Ninguna tarifa aplica para esta modalidad."); return; }
+      const { error: e1 } = await sb.from("planes_pago").upsert({ alumno_id: alumno.id, ciclo_escolar_id: ciclo.id, modalidad: mod }, { onConflict: "alumno_id,ciclo_escolar_id" });
+      if (e1) { gen.disabled = false; $("coGenMsg").innerHTML = errBox(escHtml(e1.message)); return; }
+      const { error: e2 } = await sb.from("cargos").insert(filas);
+      if (e2) { gen.disabled = false; $("coGenMsg").innerHTML = errBox(escHtml(e2.message)); return; }
+      recargar();
+    });
+
+    const imp = $("coImprimirEdo");
+    if (imp) imp.addEventListener("click", () => window.print());
+
+    const reex = $("coReexentar");
+    if (reex) reex.addEventListener("click", async () => {
+      reex.disabled = true;
+      const r = await colAplicarExenciones(alumno.id, ciclo.id);
+      if (r.error) { $("coForm").innerHTML = errBox(escHtml(r.error)); reex.disabled = false; return; }
+      recargar();
+    });
+
+    $("coAddCargo").addEventListener("click", () => {
+      $("coForm").innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Agregar otro cargo (uniforme, papelería, extemporáneo…)</p>
+          <div class="grid grid-cols-3 gap-2 mb-2">
+            <input id="cgDesc" placeholder="Descripción" class="col-span-3 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+            <input id="cgMonto" type="number" min="0" step="0.01" placeholder="Monto" class="px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+            <input id="cgVenc" type="date" value="${hoy}" class="col-span-2 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+          </div>
+          <div id="cgMsg"></div>
+          <button id="cgOk" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar cargo</button>
+        </div>`;
+      $("cgOk").addEventListener("click", async () => {
+        const desc = $("cgDesc").value.trim(), monto = Number($("cgMonto").value), venc = $("cgVenc").value;
+        if (!desc || !(monto > 0) || !venc) { $("cgMsg").innerHTML = errBox("Captura descripción, monto y fecha."); return; }
+        $("cgOk").disabled = true;
+        const { error: e } = await sb.from("cargos").insert({ alumno_id: alumno.id, ciclo_escolar_id: ciclo.id, concepto: "Otro", descripcion: desc, orden: 90, fecha_vencimiento: venc, monto_original: monto, descuento: 0, monto });
+        if (e) { $("cgOk").disabled = false; $("cgMsg").innerHTML = errBox(escHtml(e.message)); return; }
+        recargar();
+      });
+    });
+
+    caja.querySelectorAll(".coPagar").forEach(b => b.addEventListener("click", () => {
+      const c = cargos.find(x => x.id === b.dataset.id);
+      $("coForm").innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Cobrar: ${escHtml(c.descripcion)}</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">Saldo: ${mxn(c.saldo)}. Puedes registrar un abono menor.</p>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <input id="pgMonto" type="number" min="0.01" step="0.01" value="${Number(c.saldo).toFixed(2)}" class="px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+            <select id="pgForma" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">${COL_FORMAS.map(f => `<option>${f}</option>`).join("")}</select>
+            <input id="pgRef" placeholder="Referencia / folio de transferencia (opcional)" class="col-span-2 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+          </div>
+          <div id="pgMsg"></div>
+          <button id="pgOk" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Registrar pago</button>
+        </div>`;
+      $("coForm").scrollIntoView({ behavior: "smooth" });
+      $("pgOk").addEventListener("click", async () => {
+        const monto = Math.round(Number($("pgMonto").value) * 100) / 100;
+        if (!(monto > 0)) { $("pgMsg").innerHTML = errBox("Captura un monto válido."); return; }
+        if (monto > Number(c.saldo) + 0.004) { $("pgMsg").innerHTML = errBox("El monto excede el saldo del cargo."); return; }
+        $("pgOk").disabled = true;
+        const { data: pago, error: e } = await sb.from("pagos").insert({
+          cargo_id: c.id, alumno_id: alumno.id, monto, fecha: hoy, forma_pago: $("pgForma").value,
+          referencia: $("pgRef").value.trim() || null, registrado_por: state.perfil.id,
+        }).select().single();
+        if (e) { $("pgOk").disabled = false; $("pgMsg").innerHTML = errBox(escHtml(e.message)); return; }
+        await cargarCuenta(alumno, ciclo.id);
+        mostrarRecibo(pago, c, alumno, membrete, ciclo, Number(c.saldo) - monto);
+      });
+    }));
+
+    // Historial de pagos
+    const cargoIds = cargos.map(c => c.id);
+    if (cargoIds.length) {
+      const { data: pagos } = await sb.from("pagos").select("*").in("cargo_id", cargoIds).order("folio", { ascending: false });
+      const porCargo = new Map(cargos.map(c => [c.id, c]));
+      $("coPagosHist").innerHTML = (pagos || []).length ? `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Pagos registrados</p>
+          ${pagos.map(p => `<div class="flex items-center justify-between gap-2 text-xs py-1.5" style="border-top:1px solid #F0EDE6; ${p.cancelado ? "opacity:.55; text-decoration:line-through" : ""}">
+            <span>REC-${String(p.folio).padStart(5, "0")} · ${fechaLarga(p.fecha + "T12:00:00")} · ${escHtml(porCargo.get(p.cargo_id)?.descripcion || "")} · ${escHtml(p.forma_pago)}${p.cancelado ? " · CANCELADO" : ""}</span>
+            <span class="flex gap-1 items-center"><strong>${mxn(p.monto)}</strong>
+              ${p.cancelado ? "" : `<button class="coRec px-2 py-1 rounded-lg text-xs" data-id="${p.id}" style="background:#F4F1EB; color:#1E3A8A">Recibo</button>${esAdmin ? `<button class="coCanc px-2 py-1 rounded-lg text-xs" data-id="${p.id}" style="background:#FBEAE8; color:#B5453A">Cancelar</button>` : ""}`}
+            </span></div>`).join("")}
+        </div>` : "";
+      $("coPagosHist").querySelectorAll(".coRec").forEach(b => b.addEventListener("click", () => {
+        const p = pagos.find(x => x.id === b.dataset.id);
+        const c = porCargo.get(p.cargo_id);
+        mostrarRecibo(p, c, alumno, membrete, ciclo, Number(c.saldo));
+      }));
+      $("coPagosHist").querySelectorAll(".coCanc").forEach(b => b.addEventListener("click", async () => {
+        const motivo = prompt("Motivo de la cancelación del pago (obligatorio):");
+        if (!motivo || !motivo.trim()) return;
+        const { error: e } = await sb.from("pagos").update({ cancelado: true, motivo_cancelacion: motivo.trim(), cancelado_por: state.perfil.id }).eq("id", b.dataset.id);
+        if (e) { $("coForm").innerHTML = errBox(escHtml(e.message)); return; }
+        recargar();
+      }));
+    }
+  }
+
+  function mostrarRecibo(pago, cargo, alumno, membrete, ciclo, saldoRestante) {
+    const caja = $("coRecibo");
+    if (!caja) return;
+    caja.innerHTML = `
+      <div id="coReciboImp" class="ib-imprimible p-5 rounded-xl bg-white border mb-2" style="border-color:#E1DED5; color:#1C2B3A; max-width:640px">
+        ${membreteHtml(membrete)}
+        <div class="flex justify-between items-baseline mb-3">
+          <h3 class="text-sm font-bold" style="color:#1E3A8A">RECIBO DE PAGO</h3>
+          <span class="text-sm font-bold">REC-${String(pago.folio).padStart(5, "0")}</span>
+        </div>
+        <div class="text-sm space-y-1" style="line-height:1.6">
+          <p><strong>Fecha:</strong> ${fechaLarga(pago.fecha + "T12:00:00")}</p>
+          <p><strong>Recibimos de:</strong> el padre, madre o tutor de <strong>${escHtml(nombreCompletoAlumno(alumno))}</strong>${alumno.matricula ? ` (matrícula ${escHtml(alumno.matricula)})` : ""}</p>
+          <p><strong>Ciclo:</strong> ${escHtml(nombreCiclo(ciclo))}</p>
+          <p><strong>Concepto:</strong> ${escHtml(cargo.descripcion)}</p>
+          <p><strong>Importe:</strong> ${mxn(pago.monto)} <span class="text-xs" style="color:#6C7B8A">(${colALetras(Number(pago.monto))})</span></p>
+          <p><strong>Forma de pago:</strong> ${escHtml(pago.forma_pago)}${pago.referencia ? ` · Ref. ${escHtml(pago.referencia)}` : ""}</p>
+          ${saldoRestante > 0.004 ? `<p><strong>Saldo restante de este concepto:</strong> ${mxn(saldoRestante)}</p>` : `<p><strong>Concepto liquidado.</strong></p>`}
+        </div>
+        <div class="flex justify-around mt-12 text-xs text-center"><div style="width:50%; border-top:1px solid #1C2B3A; padding-top:4px">Recibió<br><span style="color:#6C7B8A">${escHtml(state.perfil.nombre_completo || "")}</span></div></div>
+      </div>
+      <button id="coReciboPrint" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir recibo</button>`;
+    $("coReciboPrint").addEventListener("click", () => window.print());
+    caja.scrollIntoView({ behavior: "smooth" });
+  }
+
+  async function colAplicarExenciones(alumnoId, cicloId) {
+    const exs = await exencionesDeAlumno(alumnoId);
+    const { data: cargos, error } = await sb.from("cargos_saldo").select("*").eq("alumno_id", alumnoId).eq("ciclo_escolar_id", cicloId).eq("cancelado", false);
+    if (error) return { error: error.message };
+    for (const c of cargos || []) {
+      if (Number(c.pagado) > 0 || c.concepto === "Otro") continue;
+      const pct = colPorcentaje(exs, c.concepto, cicloId);
+      const desc = Math.round(Number(c.monto_original) * pct) / 100;
+      const monto = Math.round((Number(c.monto_original) - desc) * 100) / 100;
+      if (desc === Number(c.descuento) && monto === Number(c.monto)) continue;
+      const { error: e } = await sb.from("cargos").update({ descuento: desc, monto }).eq("id", c.id);
+      if (e) return { error: e.message };
+    }
+    return {};
+  }
+
+  // ======================= ADEUDOS =======================
+  async function tabAdeudos(cont) {
+    const cs = await ciclos();
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <select id="adCiclo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">${cs.map(c => `<option value="${c.id}" ${c.activo ? "selected" : ""}>${escHtml(nombreCiclo(c))}</option>`).join("")}</select>
+          <select id="adGrupo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos los grupos</option></select>
+        </div>
+        <label class="flex items-center gap-2 text-xs mb-2"><input type="checkbox" id="adSoloVenc" checked /> Solo saldos vencidos</label>
+        <button id="adVer" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Consultar</button>
+      </div>
+      <div id="adRes"></div>`;
+    let inscCache = [];
+    async function cargarGrupos() {
+      const { data } = await sb.from("grupos").select("id, letra, grados(nombre, nivel)").order("letra");
+      const ciclo = cs.find(c => c.id === $("adCiclo").value);
+      const g = (data || []).filter(x => x.grados?.nivel === ciclo?.nivel);
+      $("adGrupo").innerHTML = `<option value="">Todos los grupos</option>` + g.map(x => `<option value="${x.id}">${escHtml(x.grados.nombre)} "${escHtml(x.letra)}"</option>`).join("");
+    }
+    $("adCiclo").addEventListener("change", cargarGrupos);
+    cargarGrupos();
+    $("adVer").addEventListener("click", async () => {
+      const res = $("adRes");
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
+      try {
+        const cicloId = $("adCiclo").value, grupoId = $("adGrupo").value, soloVenc = $("adSoloVenc").checked;
+        const ciclo = cs.find(c => c.id === cicloId);
+        const hoy = fechaLocalISO(new Date());
+        const [inscs, cargos, membrete] = await Promise.all([
+          colTraerTodo(() => { let q = sb.from("inscripciones").select("id, alumno_id, grupo_id, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula, activo), grupos(letra, grados(nombre))").eq("ciclo_escolar_id", cicloId).eq("estado", "Inscrito").order("id"); if (grupoId) q = q.eq("grupo_id", grupoId); return q; }),
+          colTraerTodo(() => sb.from("cargos_saldo").select("alumno_id, descripcion, fecha_vencimiento, saldo").eq("ciclo_escolar_id", cicloId).eq("cancelado", false).gt("saldo", 0.004).order("id")),
+          cargarMembrete(ciclo.nivel),
+        ]);
+        const porAl = new Map();
+        cargos.forEach(c => { if (!porAl.has(c.alumno_id)) porAl.set(c.alumno_id, []); porAl.get(c.alumno_id).push(c); });
+        let filas = inscs.filter(i => i.alumnos && porAl.has(i.alumno_id)).map(i => {
+          const cs2 = porAl.get(i.alumno_id);
+          const venc = cs2.filter(c => c.fecha_vencimiento < hoy);
+          return { insc: i, alumno: i.alumnos, vencidos: venc, total: cs2.reduce((t, c) => t + Number(c.saldo), 0), saldoVenc: venc.reduce((t, c) => t + Number(c.saldo), 0) };
+        });
+        if (soloVenc) filas = filas.filter(f => f.vencidos.length);
+        filas.sort((a, b) => b.saldoVenc - a.saldoVenc);
+        inscCache = filas;
+        const ids = filas.map(f => f.alumno.id);
+        const tutores = new Map();
+        for (let i = 0; i < ids.length; i += 150) {
+          const { data } = await sb.from("alumno_tutores").select("alumno_id, es_contacto_principal, tutores(nombre_completo, telefono)").in("alumno_id", ids.slice(i, i + 150));
+          (data || []).forEach(r => { if (r.tutores && (r.es_contacto_principal || !tutores.has(r.alumno_id))) tutores.set(r.alumno_id, r.tutores); });
+        }
+        const totalV = filas.reduce((t, f) => t + f.saldoVenc, 0), totalT = filas.reduce((t, f) => t + f.total, 0);
+        res.innerHTML = filas.length === 0 ? okBox("No hay alumnos con adeudos para este filtro.") : `
+          <div id="adImprimible" class="ib-imprimible p-4 rounded-xl bg-white border" style="border-color:#E1DED5; color:#1C2B3A">
+            <p class="text-sm font-bold mb-1" style="color:#1E3A8A">${escHtml(membrete.nombre)} — Adeudos al ${fechaLarga(new Date())}</p>
+            <p class="text-xs mb-2" style="color:#6C7B8A">${filas.length} alumnos · Vencido: ${mxn(totalV)} · Total pendiente: ${mxn(totalT)}</p>
+            <div style="overflow-x:auto"><table class="w-full text-xs" style="border-collapse:collapse">
+              <thead><tr style="background:#F4F1EB; text-align:left"><th class="p-1.5">Alumno</th><th class="p-1.5">Grupo</th><th class="p-1.5 text-right">Vencido</th><th class="p-1.5 text-right">Total</th><th class="p-1.5 no-print"></th></tr></thead>
+              <tbody>${filas.map((f, i) => `<tr style="border-top:1px solid #E1DED5">
+                <td class="p-1.5">${escHtml(nombreCompletoAlumno(f.alumno))}</td>
+                <td class="p-1.5">${escHtml(f.insc.grupos ? `${f.insc.grupos.grados?.nombre || ""} "${f.insc.grupos.letra}"` : "")}</td>
+                <td class="p-1.5 text-right" style="color:#B5453A">${mxn(f.saldoVenc)}</td><td class="p-1.5 text-right">${mxn(f.total)}</td>
+                <td class="p-1.5 no-print">${tutores.get(f.alumno.id)?.telefono ? `<button class="adWa px-2 py-1 rounded-lg text-xs font-bold" data-i="${i}" style="background:#25D366; color:#fff">WhatsApp</button>` : `<span style="color:#6C7B8A">Sin tel.</span>`}</td></tr>`).join("")}</tbody>
+            </table></div>
+          </div>
+          <button id="adImp" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir lista</button>`;
+        const imp = $("adImp"); if (imp) imp.addEventListener("click", () => window.print());
+        res.querySelectorAll(".adWa").forEach(b => b.addEventListener("click", () => {
+          const f = filas[Number(b.dataset.i)], t = tutores.get(f.alumno.id);
+          const detalle = (f.vencidos.length ? f.vencidos : []).map(c => `• ${c.descripcion}: ${mxn(c.saldo)}`).join("\n");
+          const texto = `Estimado(a) ${t.nombre_completo}:\n\nLe informamos que ${nombreCompletoAlumno(f.alumno)} presenta un saldo pendiente de ${mxn(f.saldoVenc || f.total)} al ${fechaLarga(new Date())}.\n${detalle ? "\n" + detalle + "\n" : ""}\nLe agradeceremos pasar a Secretaría para regularizarlo. Si ya realizó su pago, por favor ignore este mensaje.\n\nAtentamente,\n${membrete.nombre}`;
+          if (!abrirWhatsApp(t.telefono, texto)) alert("El teléfono del tutor no es válido para WhatsApp.");
+        }));
+      } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
+    });
+  }
+
+  // ======================= CORTE DE CAJA =======================
+  async function tabCorte(cont) {
+    const hoy = fechaLocalISO(new Date());
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <div><label class="block text-xs mb-1" style="color:#6C7B8A">Desde</label><input id="ccDesde" type="date" value="${hoy}" class="w-full px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+          <div><label class="block text-xs mb-1" style="color:#6C7B8A">Hasta</label><input id="ccHasta" type="date" value="${hoy}" class="w-full px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        </div>
+        <button id="ccVer" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Consultar</button>
+      </div><div id="ccRes"></div>`;
+    $("ccVer").addEventListener("click", async () => {
+      const res = $("ccRes");
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
+      try {
+        const d = $("ccDesde").value, h = $("ccHasta").value;
+        const pagos = await colTraerTodo(() => sb.from("pagos").select("*").eq("cancelado", false).gte("fecha", d).lte("fecha", h).order("folio"));
+        const ids = [...new Set(pagos.map(p => p.alumno_id))], cids = [...new Set(pagos.map(p => p.cargo_id))];
+        const al = new Map(), cg = new Map();
+        for (let i = 0; i < ids.length; i += 150) { const { data } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno").in("id", ids.slice(i, i + 150)); (data || []).forEach(a => al.set(a.id, a)); }
+        for (let i = 0; i < cids.length; i += 150) { const { data } = await sb.from("cargos").select("id, descripcion").in("id", cids.slice(i, i + 150)); (data || []).forEach(c => cg.set(c.id, c)); }
+        const porForma = {};
+        pagos.forEach(p => { porForma[p.forma_pago] = (porForma[p.forma_pago] || 0) + Number(p.monto); });
+        const total = pagos.reduce((t, p) => t + Number(p.monto), 0);
+        res.innerHTML = pagos.length === 0 ? `<p class="text-xs" style="color:#6C7B8A">No hay pagos en ese periodo.</p>` : `
+          <div class="ib-imprimible p-4 rounded-xl bg-white border" style="border-color:#E1DED5; color:#1C2B3A">
+            <p class="text-sm font-bold mb-1" style="color:#1E3A8A">Corte de caja: ${fechaLarga(d + "T12:00:00")}${h !== d ? " al " + fechaLarga(h + "T12:00:00") : ""}</p>
+            <p class="text-xs mb-2">${Object.entries(porForma).map(([k, v]) => `${k}: <strong>${mxn(v)}</strong>`).join(" · ")} · <strong>TOTAL: ${mxn(total)}</strong></p>
+            <table class="w-full text-xs" style="border-collapse:collapse"><thead><tr style="background:#F4F1EB; text-align:left"><th class="p-1.5">Recibo</th><th class="p-1.5">Fecha</th><th class="p-1.5">Alumno</th><th class="p-1.5">Concepto</th><th class="p-1.5">Forma</th><th class="p-1.5 text-right">Importe</th></tr></thead>
+            <tbody>${pagos.map(p => `<tr style="border-top:1px solid #E1DED5"><td class="p-1.5">REC-${String(p.folio).padStart(5, "0")}</td><td class="p-1.5">${p.fecha}</td><td class="p-1.5">${escHtml(al.get(p.alumno_id) ? nombreCompletoAlumno(al.get(p.alumno_id)) : "")}</td><td class="p-1.5">${escHtml(cg.get(p.cargo_id)?.descripcion || "")}</td><td class="p-1.5">${escHtml(p.forma_pago)}</td><td class="p-1.5 text-right">${mxn(p.monto)}</td></tr>`).join("")}</tbody></table>
+          </div>
+          <button id="ccImp" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir corte</button>`;
+        const b = $("ccImp"); if (b) b.addEventListener("click", () => window.print());
+      } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
+    });
+  }
+
+  // ======================= GENERAR CARGOS (masivo) =======================
+  async function tabGenerar(cont) {
+    const cs = await ciclos();
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Crea los cargos de todos los alumnos inscritos en un ciclo que todavía no tengan cargos. Las exenciones vigentes se aplican automáticamente. Cada alumno puede después cambiar su modalidad en Cobranza solo si aún no tiene cargos.</p>
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <select id="gnCiclo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">${cs.map(c => `<option value="${c.id}" ${c.activo ? "selected" : ""}>${escHtml(nombreCiclo(c))}</option>`).join("")}</select>
+          <select id="gnMod" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">${["Mensual", "Bimestral", "Ciclo completo"].map(m => `<option>${m}</option>`).join("")}</select>
+        </div>
+        <p class="text-xs mb-2" style="color:#6C7B8A">La modalidad elegida se aplica a quienes no tengan una modalidad ya asignada.</p>
+        <div id="gnMsg" class="mb-2"></div>
+        <button id="gnGo" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Generar cargos</button>
+      </div>`;
+    $("gnGo").addEventListener("click", async () => {
+      const msg = $("gnMsg"), btn = $("gnGo");
+      btn.disabled = true; msg.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Generando…</p>`;
+      try {
+        const ciclo = cs.find(c => c.id === $("gnCiclo").value), modDef = $("gnMod").value;
+        const tarifas = await tarifasDeCiclo(ciclo.id);
+        if (!Object.keys(tarifas).length) throw new Error("Este ciclo no tiene tarifas. Captúralas en la pestaña Tarifas.");
+        const [inscs, existentes, planes, exAll] = await Promise.all([
+          colTraerTodo(() => sb.from("inscripciones").select("id, alumno_id").eq("ciclo_escolar_id", ciclo.id).eq("estado", "Inscrito").order("id")),
+          colTraerTodo(() => sb.from("cargos").select("id, alumno_id").eq("ciclo_escolar_id", ciclo.id).eq("cancelado", false).order("id")),
+          colTraerTodo(() => sb.from("planes_pago").select("id, alumno_id, modalidad").eq("ciclo_escolar_id", ciclo.id).order("id")),
+          colTraerTodo(() => sb.from("exenciones").select("*").eq("activo", true).order("id")),
+        ]);
+        const conCargos = new Set(existentes.map(c => c.alumno_id));
+        const planDe = new Map(planes.map(p => [p.alumno_id, p.modalidad]));
+        const pendientes = [...new Set(inscs.map(i => i.alumno_id))].filter(id => !conCargos.has(id));
+        const filas = [], nuevosPlanes = [];
+        pendientes.forEach(id => {
+          const mod = planDe.get(id) || modDef;
+          if (!planDe.has(id)) nuevosPlanes.push({ alumno_id: id, ciclo_escolar_id: ciclo.id, modalidad: mod });
+          filas.push(...colConstruirCargos(id, ciclo, mod, tarifas, exAll.filter(e => e.alumno_id === id)));
+        });
+        for (let i = 0; i < nuevosPlanes.length; i += 500) {
+          const { error } = await sb.from("planes_pago").upsert(nuevosPlanes.slice(i, i + 500), { onConflict: "alumno_id,ciclo_escolar_id" });
+          if (error) throw error;
+        }
+        for (let i = 0; i < filas.length; i += 500) {
+          const { error } = await sb.from("cargos").insert(filas.slice(i, i + 500));
+          if (error) throw error;
+        }
+        msg.innerHTML = okBox(`Listo: ${pendientes.length} alumnos con cargos nuevos (${filas.length} cargos). ${inscs.length - pendientes.length > 0 ? (new Set(inscs.map(i => i.alumno_id)).size - pendientes.length) + " ya tenían cargos." : ""}`);
+      } catch (e) { msg.innerHTML = errBox(escHtml(e.message)); }
+      btn.disabled = false;
+    });
+  }
+
+  // ======================= TARIFAS =======================
+  async function tabTarifas(cont) {
+    const cs = await ciclos();
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Define los montos de cada ciclo. Deja vacío (o en 0) el concepto que no se cobre. ${esAdmin ? "" : "Solo el Administrador puede modificarlas."}</p>
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <select id="tfCiclo" class="w-full px-3 py-2 rounded-lg text-sm border mb-3" style="border-color:#E1DED5">${cs.map(c => `<option value="${c.id}" ${c.activo ? "selected" : ""}>${escHtml(nombreCiclo(c))}</option>`).join("")}</select>
+        <div id="tfCampos"></div>
+        <div id="tfMsg" class="mt-2"></div>
+        ${esAdmin ? `<button id="tfGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar tarifas</button>` : ""}
+      </div>`;
+    async function pintar() {
+      const t = await tarifasDeCiclo($("tfCiclo").value);
+      $("tfCampos").innerHTML = COL_CONCEPTOS.map((c, i) => `
+        <div class="flex items-center gap-2 mb-2"><label class="flex-1 text-sm" style="color:#1C2B3A">${c}${c === "Colegiatura mensual" ? " (por mes)" : c === "Colegiatura bimestral" ? " (por bimestre)" : ""}</label>
+        <input id="tf${i}" type="number" min="0" step="0.01" value="${t[c] || ""}" ${esAdmin ? "" : "disabled"} placeholder="$ 0.00" class="w-36 px-3 py-2 rounded-lg text-sm border outline-none text-right" style="border-color:#E1DED5" /></div>`).join("");
+    }
+    $("tfCiclo").addEventListener("change", pintar);
+    pintar();
+    const g = $("tfGuardar");
+    if (g) g.addEventListener("click", async () => {
+      g.disabled = true;
+      const cicloId = $("tfCiclo").value;
+      const rows = COL_CONCEPTOS.map((c, i) => ({ ciclo_escolar_id: cicloId, concepto: c, monto: Number($(`tf${i}`).value) || 0 }));
+      const { error } = await sb.from("tarifas").upsert(rows, { onConflict: "ciclo_escolar_id,concepto" });
+      g.disabled = false;
+      $("tfMsg").innerHTML = error ? errBox(escHtml(error.message)) : okBox("Tarifas guardadas. Aplican a cargos que se generen desde ahora; los ya generados no cambian.");
+    });
+  }
+
+  // ======================= EXENCIONES Y BECAS =======================
+  async function tabExenciones(cont) {
+    const cs = await ciclos();
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Una exención omite total o parcialmente los cobros de un alumno (por ejemplo, hijo(a) del propietario: 100% en todos los cobros). Los cargos del alumno se generan ya con el descuento y quedan visibles como "Exento". ${esAdmin ? "Las exenciones las registra únicamente el Administrador." : "Solo el Administrador puede registrarlas."}</p>
+      ${esAdmin ? `<div id="exSel"></div>
+      <div id="exForm" class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5; display:none">
+        <p id="exAl" class="text-sm font-semibold mb-2" style="color:#1E3A8A"></p>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <select id="exCiclo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos los ciclos</option>${cs.map(c => `<option value="${c.id}">${escHtml(nombreCiclo(c))}</option>`).join("")}</select>
+          <select id="exConcepto" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos los cobros</option><option>Inscripción</option><option>Cuota inicial</option><option>Colegiatura</option></select>
+          <div class="flex items-center gap-1"><input id="exPct" type="number" min="1" max="100" value="100" class="w-24 px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5" /><span class="text-sm">% de descuento</span></div>
+          <input id="exMotivo" placeholder="Motivo (obligatorio)" class="px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+        </div>
+        <div id="exMsg"></div>
+        <button id="exGuardar" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Registrar exención</button>
+      </div>` : ""}
+      <div id="exLista"></div>`;
+    let alumnoSel = null;
+    if (esAdmin) {
+      selectorAlumno($("exSel"), a => { alumnoSel = a; $("exForm").style.display = ""; $("exAl").textContent = "Exención para: " + nombreCompletoAlumno(a); });
+      $("exGuardar").addEventListener("click", async () => {
+        const motivo = $("exMotivo").value.trim(), pct = Number($("exPct").value);
+        if (!alumnoSel) return;
+        if (!motivo) { $("exMsg").innerHTML = errBox("Escribe el motivo."); return; }
+        if (!(pct > 0 && pct <= 100)) { $("exMsg").innerHTML = errBox("El porcentaje debe estar entre 1 y 100."); return; }
+        $("exGuardar").disabled = true;
+        const { error } = await sb.from("exenciones").insert({ alumno_id: alumnoSel.id, ciclo_escolar_id: $("exCiclo").value || null, concepto: $("exConcepto").value || null, porcentaje: pct, motivo, autorizado_por: state.perfil.id });
+        if (error) { $("exGuardar").disabled = false; $("exMsg").innerHTML = errBox(escHtml(error.message)); return; }
+        // Aplica a cargos ya generados del alumno que no tengan pagos
+        const { data: cg } = await sb.from("cargos").select("ciclo_escolar_id").eq("alumno_id", alumnoSel.id).eq("cancelado", false);
+        for (const cid of [...new Set((cg || []).map(c => c.ciclo_escolar_id))]) await colAplicarExenciones(alumnoSel.id, cid);
+        alumnoSel = null;
+        tabExenciones(cont);
+      });
+    }
+    const { data, error } = await sb.from("exenciones").select("*, alumnos(nombres, apellido_paterno, apellido_materno)").eq("activo", true).order("creado_en", { ascending: false });
+    if (error) { $("exLista").innerHTML = errBox(escHtml(error.message)); return; }
+    const lista = data || [];
+    $("exLista").innerHTML = lista.length === 0 ? `<p class="text-xs" style="color:#6C7B8A">No hay exenciones vigentes.</p>` : `
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Exenciones vigentes</p>
+        ${lista.map(e => `<div class="flex items-center justify-between gap-2 text-xs py-1.5" style="border-top:1px solid #F0EDE6">
+          <span><strong>${escHtml(e.alumnos ? nombreCompletoAlumno(e.alumnos) : "")}</strong> · ${Number(e.porcentaje)}% · ${escHtml(e.concepto || "todos los cobros")} · ${e.ciclo_escolar_id ? escHtml(nombreCiclo(cs.find(c => c.id === e.ciclo_escolar_id) || { nivel: "", nombre: "ciclo" })) : "todos los ciclos"} · ${escHtml(e.motivo)}</span>
+          ${esAdmin ? `<button class="exQuitar px-2 py-1 rounded-lg text-xs" data-id="${e.id}" style="background:#FBEAE8; color:#B5453A">Quitar</button>` : ""}</div>`).join("")}
+      </div>`;
+    $("exLista").querySelectorAll(".exQuitar").forEach(b => b.addEventListener("click", async () => {
+      if (!confirm("¿Quitar esta exención? Los cargos ya generados conservan su descuento hasta que los recalcules en Cobranza.")) return;
+      const { error: e } = await sb.from("exenciones").update({ activo: false }).eq("id", b.dataset.id);
+      if (e) { alert(e.message); return; }
+      tabExenciones(cont);
+    }));
+  }
+
+  abrir();
 }
 
 // ============================================================
@@ -4160,6 +4937,7 @@ function renderOficios(main) {
       <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="generar">Generar documento</button>
       <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="emitidos">Emitidos</button>
       <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="plantel">Datos del plantel</button>
+      <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="reglamento">Reglamento escolar</button>
     </div>
     <div id="ofContenido" class="max-w-3xl"></div>`;
   function pintarTabs() {
@@ -4176,7 +4954,35 @@ function renderOficios(main) {
     const cont = document.getElementById("ofContenido");
     if (tabActivo === "generar") renderGenerar(cont);
     else if (tabActivo === "emitidos") renderEmitidos(cont);
+    else if (tabActivo === "reglamento") renderReglamentoTab(cont);
     else renderPlantel(cont);
+  }
+
+  // ---------- Reglamento escolar ----------
+  async function renderReglamentoTab(cont) {
+    let nivel = "Secundaria";
+    async function pintar() {
+      cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+      const reg = await cargarReglamento(nivel);
+      cont.innerHTML = `
+        <p class="text-xs mb-3" style="color:#6C7B8A">Este reglamento se imprime junto al aviso de privacidad al dar de alta a un alumno. Los títulos empiezan con "## ". ${puedeConfig ? "" : "Solo el Administrador o el Director pueden modificarlo."}</p>
+        <div class="flex gap-2 mb-3">
+          ${["Secundaria", "Preparatoria"].map(n => `<button class="rgNivel px-3 py-1.5 rounded-lg text-sm font-semibold" data-n="${n}" style="background:${n === nivel ? "#1E3A8A" : "#F4F1EB"}; color:${n === nivel ? "#fff" : "#1E3A8A"}">${n}</button>`).join("")}
+        </div>
+        ${reg.personalizado ? `<p class="text-xs mb-2" style="color:#6C7B8A">Versión guardada: ${reg.version}</p>` : `<p class="text-xs mb-2" style="color:#B7791F">Texto base propuesto (aún no guardado). Revísalo, ajústalo a tu reglamento real y guarda.</p>`}
+        <textarea id="rgTexto" rows="22" ${puedeConfig ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">${escHtml(reg.contenido)}</textarea>
+        <div id="rgMsg" class="mt-2"></div>
+        ${puedeConfig ? `<button id="rgGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar reglamento de ${nivel}</button>` : ""}`;
+      cont.querySelectorAll(".rgNivel").forEach(b => b.addEventListener("click", () => { nivel = b.dataset.n; pintar(); }));
+      const g = document.getElementById("rgGuardar");
+      if (g) g.addEventListener("click", async () => {
+        g.disabled = true;
+        const { error } = await sb.from("reglamento_escolar").upsert({ nivel, contenido: document.getElementById("rgTexto").value, version: (reg.version || 0) + 1, actualizado_en: new Date().toISOString(), actualizado_por: state.perfil.id }, { onConflict: "nivel" });
+        if (error) { g.disabled = false; document.getElementById("rgMsg").innerHTML = errBox(escHtml(error.message)); return; }
+        pintar();
+      });
+    }
+    pintar();
   }
 
   // ---------- Datos del plantel ----------
