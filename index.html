@@ -1128,7 +1128,7 @@ function renderAlumnos(main) {
         const g = inscripcionExistente?.grupos;
         mostrarConsentimientoFacial(wrap, {
           alumnoNombre: nombreCompletoAlumno(alumnoExistente), matricula: alumnoExistente.matricula || "",
-          grupoTxt: g ? `${g.grados?.nombre || ""} "${g.letra}" (${g.grados?.nivel || ""})` : "",
+          grupoTxt: g ? `${g.grados?.nombre || ""} "${g.letra}" (${g.grados?.nivel || ""})` : "", nivel: g?.grados?.nivel || "",
           tutorNombre: tutorExistente.nombre_completo, tutorParentesco: tutorExistente.parentesco,
         }, () => mostrarFormularioAlumno(alumnoExistente));
       });
@@ -1233,7 +1233,7 @@ function renderAlumnos(main) {
           await mostrarConsentimientoFacial(wrap, {
             alumnoNombre: nombreCompletoAlumno({ nombres, apellido_paterno: apPat, apellido_materno: datosAlumno.apellido_materno }),
             matricula: matriculaNueva,
-            grupoTxt: opcGrupo ? `${opcGrupo}${nivelTxt ? " (" + nivelTxt + ")" : ""}` : "",
+            grupoTxt: opcGrupo ? `${opcGrupo}${nivelTxt ? " (" + nivelTxt + ")" : ""}` : "", nivel: nivelTxt,
             tutorNombre: t1.nombre_completo, tutorParentesco: t1.parentesco,
           });
           return;
@@ -1422,7 +1422,7 @@ function crearMatcher(personas) {
 
 // Registra la siguiente marca de la persona: Entrada si no tiene una entrada hoy,
 // Salida si ya entró hoy. Si su último movimiento es de un día anterior, empieza con Entrada.
-async function registrarMovimiento(persona, metodo, distancia) {
+async function registrarMovimiento(persona, metodo, distancia, modo) {
   const esAlumno = persona.tipo === "Alumno";
   const inicioDia = new Date();
   inicioDia.setHours(0, 0, 0, 0);
@@ -1431,13 +1431,19 @@ async function registrarMovimiento(persona, metodo, distancia) {
     .from("registros_acceso")
     .select("tipo_evento, fecha_hora")
     .eq(esAlumno ? "alumno_id" : "perfil_id", esAlumno ? persona.alumno_id : persona.perfil_id)
+    .gte("fecha_hora", inicioDia.toISOString())
     .order("fecha_hora", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (errUltimo) throw errUltimo;
 
-  const entroHoy = ultimo && ultimo.tipo_evento === "Entrada" && new Date(ultimo.fecha_hora) >= inicioDia;
-  const evento = entroHoy ? "Salida" : "Entrada";
+  // El tipo de lectura lo elige el usuario (Entrada o Salida). Si el último movimiento de hoy
+  // ya es del mismo tipo, es un duplicado y NO se registra.
+  const evento = modo === "Salida" ? "Salida" : "Entrada";
+  if (ultimo && ultimo.tipo_evento === evento) {
+    return { evento, duplicado: true, hora: ultimo.fecha_hora, sinEntrada: false };
+  }
+  const sinEntrada = evento === "Salida" && !ultimo;
 
   const { error } = await sb.from("registros_acceso").insert({
     tipo_persona: persona.tipo,
@@ -1449,7 +1455,7 @@ async function registrarMovimiento(persona, metodo, distancia) {
     distancia: distancia != null ? Number(distancia.toFixed(3)) : null,
   });
   if (error) throw error;
-  return evento;
+  return { evento, duplicado: false, hora: new Date().toISOString(), sinEntrada };
 }
 
 function renderAccesos(main) {
@@ -1517,10 +1523,17 @@ function renderAccesos(main) {
     let matcher = null;
     let ultimaCarga = 0;
     let bannerTimer = null;
+    let modoLectura = null; // "Entrada" | "Salida"
 
     cont.innerHTML = `
       <div class="max-w-md">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Tipo de lectura</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">Elige qué vas a registrar. Si una persona ya tiene ese registro hoy, no se vuelve a registrar.</p>
+          <div class="flex gap-2 mb-3">
+            <button type="button" class="rfModoBtn flex-1 py-2 rounded-lg text-sm font-bold border" data-modo="Entrada" style="border-color:#E1DED5; background:#fff; color:#1E3A8A">Entradas</button>
+            <button type="button" class="rfModoBtn flex-1 py-2 rounded-lg text-sm font-bold border" data-modo="Salida" style="border-color:#E1DED5; background:#fff; color:#1E3A8A">Salidas</button>
+          </div>
           <video id="rfVideo" class="w-full rounded-lg bg-black" style="max-height:300px; object-fit:cover; transform:scaleX(-1)" playsinline muted></video>
           <p id="rfEstado" class="text-xs mt-2" style="color:#6C7B8A">La cámara está apagada.</p>
           <div class="flex gap-2 mt-2">
@@ -1546,6 +1559,21 @@ function renderAccesos(main) {
         </div>
       </div>`;
 
+    document.getElementById("rfIniciar").disabled = true;
+    function pintarModo() {
+      document.querySelectorAll(".rfModoBtn").forEach(b => {
+        const act = b.dataset.modo === modoLectura;
+        b.style.background = act ? (b.dataset.modo === "Entrada" ? "#3F7A5E" : "#1E3A8A") : "#fff";
+        b.style.color = act ? "#fff" : "#1E3A8A";
+      });
+      const ini = document.getElementById("rfIniciar");
+      if (ini && ini.style.display !== "none") ini.disabled = !modoLectura;
+      const est = document.getElementById("rfEstado");
+      if (est && !camStream) est.textContent = modoLectura ? `Modo: ${modoLectura === "Entrada" ? "ENTRADAS" : "SALIDAS"}. La cámara está apagada.` : "Elige primero si vas a registrar entradas o salidas.";
+    }
+    function bloquearModo(bloq) { document.querySelectorAll(".rfModoBtn").forEach(b => { b.disabled = bloq; b.style.opacity = bloq ? "0.6" : "1"; }); }
+    document.querySelectorAll(".rfModoBtn").forEach(b => b.addEventListener("click", () => { modoLectura = b.dataset.modo; pintarModo(); }));
+    pintarModo();
     document.getElementById("rfIniciar").addEventListener("click", iniciar);
     document.getElementById("rfDetener").addEventListener("click", () => { detenerCamara(); restablecerBotones("La cámara está apagada."); });
     document.getElementById("rfManualBtn").addEventListener("click", buscarManual);
@@ -1558,8 +1586,9 @@ function renderAccesos(main) {
       const est = document.getElementById("rfEstado");
       if (!ini) return;
       ini.style.display = "";
-      ini.disabled = false;
+      ini.disabled = !modoLectura;
       det.style.display = "none";
+      bloquearModo(false);
       est.textContent = textoEstado || "";
     }
 
@@ -1571,15 +1600,21 @@ function renderAccesos(main) {
       bannerTimer = setTimeout(() => { const c = document.getElementById("rfResultado"); if (c) c.innerHTML = ""; }, 6000);
     }
 
-    function bannerRegistro(persona, evento, metodo) {
-      const hora = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
-      const colorFondo = evento === "Entrada" ? "#E6F0EA" : "#E8EDF7";
-      const colorBorde = evento === "Entrada" ? "#3F7A5E" : "#1E3A8A";
+    function bannerRegistro(persona, r, metodo) {
+      const evento = r.evento;
+      const hora = new Date(r.hora).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+      const dup = r.duplicado;
+      const colorFondo = dup ? "#FBF1DC" : (evento === "Entrada" ? "#E6F0EA" : "#E8EDF7");
+      const colorBorde = dup ? "#B7791F" : (evento === "Entrada" ? "#3F7A5E" : "#1E3A8A");
+      const titulo = dup
+        ? `Ya registró su ${evento.toLowerCase()} hoy a las ${hora} (no se duplicó)`
+        : `${evento} registrada — ${hora}${metodo === "Manual" ? " (manual)" : ""}`;
       return `
         <div class="p-4 rounded-xl" style="background:${colorFondo}; border:1px solid ${colorBorde}">
           <p class="text-base font-bold" style="color:#1E3A8A">${escHtml(persona.nombre)}</p>
           <p class="text-xs" style="color:#6C7B8A">${persona.tipo === "Alumno" ? "Alumno · " : "Personal · "}${escHtml(persona.detalle || "")}</p>
-          <p class="text-lg font-bold mt-1" style="color:${colorBorde}">${evento} registrada — ${hora}${metodo === "Manual" ? " (manual)" : ""}</p>
+          <p class="text-lg font-bold mt-1" style="color:${colorBorde}">${titulo}</p>
+          ${r.sinEntrada ? `<p class="text-xs mt-1" style="color:#B7791F">Aviso: no tenía entrada registrada hoy.</p>` : ""}
         </div>`;
     }
 
@@ -1612,8 +1647,9 @@ function renderAccesos(main) {
       const sesion = ++kioskSesion;
       mantenerPantallaEncendida();
       ini.style.display = "none";
+      bloquearModo(true);
       document.getElementById("rfDetener").style.display = "";
-      est.textContent = `Reconocimiento activo (${personas.length} rostros registrados). Acércate a la cámara.`;
+      est.textContent = `Modo ${modoLectura === "Entrada" ? "ENTRADAS" : "SALIDAS"} · Reconocimiento activo (${personas.length} rostros registrados). Acércate a la cámara.`;
       bucle(sesion);
     }
 
@@ -1659,8 +1695,8 @@ function renderAccesos(main) {
               const persona = personas.find(p => p.clave === mejor.label);
               if (persona) {
                 try {
-                  const evento = await registrarMovimiento(persona, "Rostro", mejor.distance);
-                  mostrarBanner(bannerRegistro(persona, evento, "Rostro"));
+                  const r = await registrarMovimiento(persona, "Rostro", mejor.distance, modoLectura);
+                  mostrarBanner(bannerRegistro(persona, r, "Rostro"));
                   cargarHoy();
                 } catch (e) {
                   bloqueados.delete(mejor.label);
@@ -1722,8 +1758,9 @@ function renderAccesos(main) {
         res.querySelectorAll(".rfManualSel").forEach(b => b.addEventListener("click", async () => {
           const persona = encontrados[Number(b.dataset.idx)];
           try {
-            const evento = await registrarMovimiento(persona, "Manual", null);
-            mostrarBanner(bannerRegistro(persona, evento, "Manual"));
+            if (!modoLectura) { mostrarBanner(errBox("Elige primero el tipo de lectura (Entradas o Salidas).")); return; }
+            const r = await registrarMovimiento(persona, "Manual", null, modoLectura);
+            mostrarBanner(bannerRegistro(persona, r, "Manual"));
             document.getElementById("rfManualResultados").innerHTML = "";
             document.getElementById("rfManualInput").value = "";
             cargarHoy();
@@ -2190,7 +2227,7 @@ async function renderReporteAusencias(cont) {
 // Aviso de privacidad y consentimiento de reconocimiento facial
 // ============================================================
 async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
-  const membrete = await cargarMembrete();
+  const membrete = await cargarMembrete(datos.nivel);
   const nombreAl = datos.alumnoNombre;
   const hoy = fechaLarga(new Date());
   destino.innerHTML = `
@@ -2218,7 +2255,7 @@ async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
         <p class="text-xs text-right mt-2">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${hoy}.</p>
         <div class="flex justify-between mt-12 text-xs text-center">
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del padre, madre o tutor<br><span style="color:#6C7B8A">${escHtml(datos.tutorNombre)}</span></div>
-          <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Recibe por el Instituto<br><span style="color:#6C7B8A">Nombre y firma</span></div>
+          <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Recibe por el plantel<br><span style="color:#6C7B8A">Nombre y firma</span></div>
         </div>
       </div>
       <div class="flex gap-2 mt-3">
@@ -2573,10 +2610,36 @@ async function renderAvisoPrivacidad(main) {
     return datos[campo] && datos[campo].trim() ? datos[campo] : `<span style="color:#B5453A">[${textoVacio}]</span>`;
   }
 
+  let docTipo = "Secundaria"; // Secundaria | Preparatoria | Docentes
+  let docenteId = "";
+  let docentes = [];
+  try {
+    const { data: perfs } = await sb.rpc("personal_para_acceso");
+    docentes = (perfs || []).filter(p => p.rol === "Profesor" && p.activo !== false).sort((a, b) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es"));
+  } catch (e) { docentes = []; }
+
   function pintar() {
+    const esDoc = docTipo === "Docentes";
+    const nomPlantel = esDoc ? (datos.nombre_oficial && datos.nombre_oficial.trim() ? datos.nombre_oficial : "Juan Bosco Instituto") : PLANTEL_NOMBRE[docTipo];
+    const logoSrc = document.getElementById("headerLogo")?.src || "";
+    const docente = docentes.find(d => d.id === docenteId);
+    const rsp = `<strong>${escHtml(nomPlantel)}</strong>`;
     main.innerHTML = `
       <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Aviso de Privacidad</h2>
       <div class="max-w-2xl">
+        <div class="p-4 rounded-xl bg-white border mb-4" style="border-color:#E1DED5">
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Aviso a mostrar</label>
+          <select id="avTipoSel" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+            <option value="Secundaria" ${docTipo === "Secundaria" ? "selected" : ""}>Alumnos de Secundaria (Juan Bosco Secundaria)</option>
+            <option value="Preparatoria" ${docTipo === "Preparatoria" ? "selected" : ""}>Alumnos de Preparatoria (Juan Bosco Preparatoria)</option>
+            <option value="Docentes" ${esDoc ? "selected" : ""}>Docentes (general, ambos niveles)</option>
+          </select>
+          ${esDoc ? `<label class="block text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Docente (opcional: si no eliges, el nombre queda en blanco para llenarlo a mano)</label>
+          <select id="avDocenteSel" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
+            <option value="">— En blanco —</option>
+            ${docentes.map(d => `<option value="${d.id}" ${d.id === docenteId ? "selected" : ""}>${escHtml(d.nombre_completo)}</option>`).join("")}
+          </select>` : ""}
+        </div>
         ${esAdmin ? `
         <div class="p-4 rounded-xl bg-white border mb-4" style="border-color:#E1DED5">
           <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Datos del instituto (se usan en el aviso y en futuros documentos)</p>
@@ -2595,15 +2658,35 @@ async function renderAvisoPrivacidad(main) {
         </div>` : ""}
 
         <div id="ibAvisoImprimible" class="ib-imprimible p-6 rounded-xl bg-white border" style="border-color:#E1DED5">
-          <div class="text-center mb-4">
-            <div class="ib-brand text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${val("nombre_oficial", "Nombre oficial del instituto pendiente")}</div>
-            <div class="text-xs" style="color:#6C7B8A">${val("domicilio", "Domicilio pendiente")}${datos.ciudad ? ", " + datos.ciudad : ""}</div>
+          <div class="flex items-center gap-3 mb-4">
+            ${logoSrc ? `<img src="${logoSrc}" style="height:56px" alt="" />` : ""}
+            <div class="flex-1 text-center">
+              <div class="ib-brand text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${escHtml(nomPlantel)}</div>
+              <div class="text-xs" style="color:#6C7B8A">${val("domicilio", "Domicilio pendiente")}${datos.ciudad ? ", " + datos.ciudad : ""}</div>
+            </div>
           </div>
 
-          <h3 class="text-sm font-bold text-center mb-3" style="color:#1E3A8A">AVISO DE PRIVACIDAD</h3>
+          <h3 class="text-sm font-bold text-center mb-3" style="color:#1E3A8A">AVISO DE PRIVACIDAD${esDoc ? " PARA PERSONAL DOCENTE" : ""}</h3>
 
+          ${esDoc ? `
           <div class="text-xs space-y-3" style="color:#1E3A8A">
-            <p>${val("nombre_oficial", "Nombre oficial del instituto pendiente")} (en adelante "el Instituto"), con domicilio en ${val("domicilio", "domicilio pendiente")}, es responsable del tratamiento de los datos personales que se recaben de sus alumnos, así como de los padres, madres o tutores legales que los representan, de conformidad con lo dispuesto por la Ley Federal de Protección de Datos Personales en Posesión de los Particulares y su Reglamento.</p>
+            <p>${rsp} (en adelante "el Instituto"), con domicilio en ${val("domicilio", "domicilio pendiente")}, es responsable del tratamiento de los datos personales de su personal docente, de conformidad con la Ley Federal de Protección de Datos Personales en Posesión de los Particulares y su Reglamento.</p>
+            <p><strong>Datos personales que se recaban.</strong> Datos de identificación y contacto (nombre, domicilio, teléfono, correo electrónico), datos académicos y profesionales (grado de estudios, cédula profesional, experiencia), datos laborales (nivel, materias y grupos asignados, horarios, asistencia) y, únicamente con su autorización expresa y por escrito, datos biométricos (representación numérica de los rasgos faciales) para registrar su entrada y salida. No se almacena fotografía del rostro con esta finalidad. Los datos biométricos son datos personales sensibles.</p>
+            <p><strong>Finalidades del tratamiento.</strong> Administración de la relación laboral o de prestación de servicios; asignación de materias y grupos; captura y consulta de criterios de evaluación y calificaciones; control de asistencia y de entradas y salidas; comunicación institucional; y cumplimiento de obligaciones ante las autoridades educativas, fiscales y laborales.</p>
+            <p><strong>Reconocimiento facial.</strong> Su uso es voluntario. Si no otorga su consentimiento, su entrada y salida se registrará de forma manual, sin que ello afecte su situación laboral. Puede revocar su consentimiento en cualquier momento, con lo cual su registro biométrico será eliminado.</p>
+            <p><strong>Transferencia de datos.</strong> El Instituto no transferirá sus datos personales a terceros, salvo que exista una obligación legal o lo requiera una autoridad competente.</p>
+            <p><strong>Derechos ARCO.</strong> Usted puede Acceder, Rectificar, Cancelar u Oponerse al tratamiento de sus datos, así como revocar su consentimiento, comunicándose al correo ${val("correo", "correo pendiente")} o al teléfono ${val("telefono", "teléfono pendiente")}.</p>
+            <p><strong>Cambios al aviso.</strong> Cualquier modificación será comunicada a través de los medios de contacto registrados.</p>
+            <p><strong>Consentimiento.</strong> Yo, <strong>${docente ? escHtml(docente.nombre_completo) : "______________________________________"}</strong>, declaro haber leído y comprendido el presente aviso de privacidad y otorgo mi consentimiento para el tratamiento de mis datos personales conforme a él.</p>
+            <div class="flex gap-8 justify-center my-2 text-sm font-semibold"><span>☐ SÍ AUTORIZO el reconocimiento facial</span><span>☐ NO AUTORIZO</span></div>
+            <p class="text-right mt-4">${val("ciudad", "ciudad pendiente")}, a ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
+            <div class="flex justify-between mt-12 text-xs text-center">
+              <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del docente${docente ? `<br><span style="color:#6C7B8A">${escHtml(docente.nombre_completo)}</span>` : ""}</div>
+              <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Recibe por el Instituto<br><span style="color:#6C7B8A">Nombre y firma</span></div>
+            </div>
+          </div>` : `
+          <div class="text-xs space-y-3" style="color:#1E3A8A">
+            <p>${rsp} (en adelante "el Plantel"), con domicilio en ${val("domicilio", "domicilio pendiente")}, es responsable del tratamiento de los datos personales que se recaben de sus alumnos, así como de los padres, madres o tutores legales que los representan, de conformidad con lo dispuesto por la Ley Federal de Protección de Datos Personales en Posesión de los Particulares y su Reglamento.</p>
 
             <p><strong>Datos personales que se recaban.</strong> Datos de identificación del alumno (nombre, CURP, fecha de nacimiento, sexo, matrícula), datos de contacto de los padres, madres o tutores (nombre, parentesco, teléfono, correo electrónico, domicilio), información académica (calificaciones, asistencia, grupo y nivel escolar), información relacionada con el pago de colegiaturas y demás cuotas escolares cuando aplique, así como, únicamente cuando el padre, madre o tutor lo autorice por escrito, datos biométricos (representación numérica de los rasgos faciales) utilizados para registrar la entrada y salida de las instalaciones. No se almacena fotografía del rostro con esta finalidad.</p>
 
@@ -2613,22 +2696,25 @@ async function renderAvisoPrivacidad(main) {
 
             <p>De manera adicional, los datos de contacto podrán utilizarse para el envío de comunicados, avisos y circulares relacionados con la vida escolar del alumno. Si usted no desea que sus datos se utilicen para esta finalidad secundaria, puede manifestarlo a través de los medios de contacto señalados en este aviso.</p>
 
-            <p><strong>Transferencia de datos.</strong> El Instituto no transferirá sus datos personales a terceros no relacionados con las finalidades aquí descritas, salvo que exista una obligación legal o así lo requiera una autoridad educativa competente.</p>
+            <p><strong>Transferencia de datos.</strong> El Plantel no transferirá sus datos personales a terceros no relacionados con las finalidades aquí descritas, salvo que exista una obligación legal o así lo requiera una autoridad educativa competente.</p>
 
             <p><strong>Derechos ARCO.</strong> Usted tiene derecho a Acceder, Rectificar, Cancelar u Oponerse al tratamiento de sus datos personales (derechos ARCO), así como a revocar el consentimiento otorgado. Para ejercerlos, puede comunicarse al correo ${val("correo", "correo pendiente")} o al teléfono ${val("telefono", "teléfono pendiente")}.</p>
 
-            <p><strong>Cambios al aviso de privacidad.</strong> El presente aviso de privacidad puede sufrir modificaciones. Cualquier cambio será comunicado oportunamente a través de los medios de contacto que el Instituto tenga registrados.</p>
+            <p><strong>Cambios al aviso de privacidad.</strong> El presente aviso de privacidad puede sufrir modificaciones. Cualquier cambio será comunicado oportunamente a través de los medios de contacto que el Plantel tenga registrados.</p>
 
             <p><strong>Consentimiento.</strong> Al momento de realizar el trámite de inscripción, el padre, madre o tutor legal manifiesta haber leído y aceptado el contenido del presente aviso de privacidad.</p>
 
             <p class="text-right mt-4">${val("ciudad", "ciudad pendiente")}, a ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
-          </div>
+          </div>`}
         </div>
 
         <button id="avImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>
       </div>`;
 
     document.getElementById("avImprimirBtn").addEventListener("click", () => window.print());
+    document.getElementById("avTipoSel").addEventListener("change", e => { docTipo = e.target.value; pintar(); });
+    const dSel = document.getElementById("avDocenteSel");
+    if (dSel) dSel.addEventListener("change", e => { docenteId = e.target.value; pintar(); });
 
     if (esAdmin) {
       document.getElementById("diGuardar").addEventListener("click", async () => {
@@ -3164,7 +3250,7 @@ function renderBoletas(main) {
         <div class="flex items-center gap-3 mb-3">
           ${logo ? `<img src="${logo}" style="height:56px" alt="" />` : ""}
           <div class="flex-1 text-center">
-            <div class="text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${escHtml(inst.nombre_oficial || "Instituto Juan Bosco")}</div>
+            <div class="text-base font-semibold" style="color:#1E3A8A; white-space:pre-line">${escHtml(PLANTEL_NOMBRE[insc.grupos?.grados?.nivel] || inst.nombre_oficial || "Juan Bosco Instituto")}</div>
             <div class="text-xs" style="color:#6C7B8A">${escHtml(inst.domicilio || "")}${inst.ciudad ? ", " + escHtml(inst.ciudad) : ""}</div>
           </div>
         </div>
@@ -3227,11 +3313,14 @@ function abrirWhatsApp(tel, texto) {
   window.open(`https://wa.me/${n}?text=${encodeURIComponent(texto)}`, "_blank");
   return true;
 }
-async function cargarMembrete() {
+const PLANTEL_NOMBRE = { Secundaria: "Juan Bosco Secundaria", Preparatoria: "Juan Bosco Preparatoria" };
+// Con nivel: "Juan Bosco Secundaria" / "Juan Bosco Preparatoria". Sin nivel: nombre general (solo docentes y avisos a todos).
+async function cargarMembrete(nivel) {
   const { data } = await sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad, telefono").eq("id", 1).maybeSingle();
   const d = data || {};
   return {
-    nombre: d.nombre_oficial || "Instituto Juan Bosco",
+    nombre: PLANTEL_NOMBRE[nivel] || d.nombre_oficial || "Juan Bosco Instituto",
+    nivel: nivel || null,
     domicilio: d.domicilio || "",
     ciudad: d.ciudad || "",
     telefono: d.telefono || "",
@@ -3462,10 +3551,11 @@ function renderDisciplina(main) {
   // ---------- Detalle y pasos ----------
   async function renderDetalleReporte(cont, id) {
     cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
-    const [repRes, membrete] = await Promise.all([
+    const [repRes, membreteGen] = await Promise.all([
       sb.from("reportes_disciplina").select("*, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula), tipos_incidencia(nombre)").eq("id", id).single(),
       cargarMembrete(),
     ]);
+    let membrete = membreteGen;
     if (repRes.error) { cont.innerHTML = errBox(escHtml(repRes.error.message)); return; }
     let r = repRes.data;
     const alumno = r.alumnos;
@@ -3477,6 +3567,7 @@ function renderDisciplina(main) {
     ]);
     const tutores = (tutRes.data || []).map(t => t.tutores).filter(Boolean);
     const tutor = tutores.find(t => t.id === r.tutor_id) || tutores[0] || null;
+    if (inscRes.data?.grupos?.grados?.nivel) membrete = await cargarMembrete(inscRes.data.grupos.grados.nivel);
     const grupoTxt = inscRes.data?.grupos ? `${inscRes.data.grupos.grados.nombre} "${inscRes.data.grupos.letra}" (${inscRes.data.grupos.grados.nivel})` : "";
     const nombreAl = nombreCompletoAlumno(alumno);
     const esLeve = r.gravedad === "Leve";
@@ -3792,10 +3883,12 @@ function renderAvisos(main) {
     caja.innerHTML = `<p class="text-xs mt-3" style="color:#6C7B8A">Preparando destinatarios…</p>`;
     let q = sb.from("inscripciones").select("grupo_id, alumnos(id, nombres, apellido_paterno, apellido_materno, activo), grupos(grados(nivel))").eq("estado", "Inscrito");
     if (aviso.audiencia === "Grupo") q = q.eq("grupo_id", aviso.grupo_id);
-    const [inscRes, envRes, membrete] = await Promise.all([q, sb.from("avisos_envios").select("tutor_id").eq("aviso_id", aviso.id), cargarMembrete()]);
+    const [inscRes, envRes, membreteGen] = await Promise.all([q, sb.from("avisos_envios").select("tutor_id").eq("aviso_id", aviso.id), cargarMembrete()]);
     if (inscRes.error) { caja.innerHTML = errBox(escHtml(inscRes.error.message)); return; }
     let insc = (inscRes.data || []).filter(i => i.alumnos && i.alumnos.activo !== false);
     if (aviso.audiencia === "Nivel") insc = insc.filter(i => i.grupos?.grados?.nivel === aviso.nivel);
+    const nivelAviso = aviso.audiencia === "Nivel" ? aviso.nivel : (aviso.audiencia === "Grupo" ? insc[0]?.grupos?.grados?.nivel : null);
+    const membrete = nivelAviso ? await cargarMembrete(nivelAviso) : membreteGen;
     const alumnoIds = [...new Set(insc.map(i => i.alumnos.id))];
     if (alumnoIds.length === 0) { caja.innerHTML = bloqueGeneral + `<div class="mt-3">${errBox("No hay alumnos inscritos para esa audiencia (el envío uno por uno no está disponible).")}</div>`; enlazarGeneral(); return; }
 
@@ -3886,19 +3979,19 @@ const folioOficio = (numero, fechaISO) => `OF-${new Date(fechaISO).getFullYear()
 
 // Carga todo lo que necesitan los documentos de un alumno para un ciclo.
 async function cargarContextoOficio(alumnoId, cicloId) {
-  const [alRes, inscRes, tutRes, repRes, plantelRes, membrete] = await Promise.all([
+  const [alRes, inscRes, tutRes, repRes, plantelRes] = await Promise.all([
     sb.from("alumnos").select("*").eq("id", alumnoId).single(),
     sb.from("inscripciones").select("grupo_id, ciclo_escolar_id, estado, fecha_inscripcion, grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre, fecha_inicio, fecha_fin)")
       .eq("alumno_id", alumnoId).order("fecha_inscripcion", { ascending: false }),
     sb.from("alumno_tutores").select("es_contacto_principal, tutores(nombre_completo, parentesco, telefono, correo, direccion)").eq("alumno_id", alumnoId).order("es_contacto_principal", { ascending: false }),
     sb.from("reportes_disciplina").select("gravedad").eq("alumno_id", alumnoId),
     sb.from("datos_institucion").select("*").eq("id", 1).maybeSingle(),
-    cargarMembrete(),
   ]);
   if (alRes.error) throw alRes.error;
   const inscripciones = (inscRes.data || []).filter(i => i.grupos && i.grupos.grados && i.ciclos_escolares);
   const insc = (cicloId && inscripciones.find(i => i.ciclo_escolar_id === cicloId)) || inscripciones[0] || null;
   const reportes = repRes.data || [];
+  const membrete = await cargarMembrete(insc?.grupos?.grados?.nivel);
   return {
     alumno: alRes.data, inscripciones, insc,
     tutores: (tutRes.data || []).map(t => t.tutores).filter(Boolean),
@@ -3943,6 +4036,12 @@ async function calificacionesDeAlumno(alumnoId, insc) {
   return { prefijo, periodos, filas, general: conProm.length ? conProm.reduce((s, f) => s + f.promedio, 0) / conProm.length : null };
 }
 
+function directorDelNivel(plantel, nivel) {
+  const p = plantel || {};
+  const d = nivel === "Preparatoria" ? p.director_preparatoria : nivel === "Secundaria" ? p.director_secundaria : "";
+  return (d || p.director_nombre || "").trim();
+}
+
 function lineaOficialPlantel(ctx) {
   const nivel = ctx.insc?.grupos?.grados?.nivel;
   const p = ctx.plantel || {};
@@ -3964,7 +4063,7 @@ function htmlOficio(tipo, ctx, op, folio, fechaEmision, calif) {
   const m = ctx.membrete;
   const nombre = nombreCompletoAlumno(a).toUpperCase();
   const plantelNombre = m.nombre.replace(/\n/g, " ");
-  const director = (ctx.plantel.director_nombre || "").trim();
+  const director = directorDelNivel(ctx.plantel, insc?.grupos?.grados?.nivel);
   const grado = insc ? `${insc.grupos.grados.nombre}, grupo "${insc.grupos.letra}"` : "";
   const nivel = insc?.grupos?.grados?.nivel || "";
   const ciclo = insc?.ciclos_escolares?.nombre || "";
@@ -3990,7 +4089,7 @@ function htmlOficio(tipo, ctx, op, folio, fechaEmision, calif) {
   }
   if (tipo === "Constancia de estudios") {
     return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS</h3>${dirigido}
-      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando el grado de <strong>${escHtml(grado)}</strong> del nivel de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>${insc.ciclos_escolares.fecha_inicio ? `, comprendido de ${escHtml(mesAnio(insc.ciclos_escolares.fecha_inicio))} a ${escHtml(mesAnio(insc.ciclos_escolares.fecha_fin))}` : ""}.</p>
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>${insc.ciclos_escolares.fecha_inicio ? `, comprendido de ${escHtml(mesAnio(insc.ciclos_escolares.fecha_inicio))} a ${escHtml(mesAnio(insc.ciclos_escolares.fecha_fin))}` : ""}.</p>
       ${cierre}`;
   }
   if (tipo === "Constancia de estudios con calificaciones") {
@@ -4007,7 +4106,7 @@ function htmlOficio(tipo, ctx, op, folio, fechaEmision, calif) {
             <tr style="background:#F4F1EB"><td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${calif.periodos.length + 1}">Promedio general</td><td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(calif.general)}</td></tr></tbody></table>
         <p class="text-xs mb-3" style="color:#6C7B8A">${calif.prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación registrada.</p>`;
     return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS CON CALIFICACIONES</h3>${dirigido}
-      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando el grado de <strong>${escHtml(grado)}</strong> del nivel de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
       ${tabla}${cierre}`;
   }
   if (tipo === "Formato de inscripción") {
@@ -4038,7 +4137,7 @@ function htmlOficio(tipo, ctx, op, folio, fechaEmision, calif) {
     const t = ctx.tutores[0];
     return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">FORMATO DE BAJA DE ALUMNO</h3>
       <div class="text-sm" style="${estilo}">
-        <p class="mb-3">Por medio del presente se hace constar la baja de ${datosAlumno}${insc ? `, ${g.inscrito} en <strong>${escHtml(grado)}</strong> del nivel de <strong>${escHtml(nivel)}</strong>, ciclo escolar <strong>${escHtml(ciclo)}</strong>` : ""}, con fecha <strong>${fechaBaja}</strong>.</p>
+        <p class="mb-3">Por medio del presente se hace constar la baja de ${datosAlumno}${insc ? `, ${g.inscrito} en <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong>, ciclo escolar <strong>${escHtml(ciclo)}</strong>` : ""}, con fecha <strong>${fechaBaja}</strong>.</p>
         <p class="mb-1"><strong>Motivo de la baja:</strong></p>
         <p class="mb-3" style="white-space:pre-line; border-bottom:1px solid #1C2B3A; min-height:1.8em">${escHtml(op.motivo || "")}</p>
         <p class="mb-1"><strong>Documentos devueltos al interesado:</strong></p>
@@ -4091,7 +4190,8 @@ function renderOficios(main) {
     cont.innerHTML = `
       <p class="text-xs mb-3" style="color:#6C7B8A">Estos datos aparecen en las constancias, cartas y formatos.${puedeConfig ? "" : " Solo el Administrador o el Director pueden modificarlos."}</p>
       <div class="p-4 rounded-xl bg-white border space-y-2" style="border-color:#E1DED5">
-        ${campo("pqDirector", "Nombre del Director(a) que firma", d.director_nombre, "Ej. Mtro. Juan Pérez López")}
+        ${campo("pqDirSec", "Director(a) de Secundaria (firma los documentos de Secundaria)", d.director_secundaria || d.director_nombre, "Ej. Mtro. Juan Pérez López")}
+        ${campo("pqDirPrep", "Director(a) de Preparatoria (firma los documentos de Preparatoria)", d.director_preparatoria, "Ej. Mtra. Ana Gómez Ruiz")}
         <div class="grid grid-cols-2 gap-2">
           ${campo("pqCctSec", "C.C.T. Secundaria", d.cct_secundaria)}${campo("pqRvoeSec", "RVOE Secundaria", d.rvoe_secundaria)}
           ${campo("pqCctPrep", "C.C.T. Preparatoria", d.cct_preparatoria)}${campo("pqRvoePrep", "RVOE Preparatoria", d.rvoe_preparatoria)}
@@ -4103,7 +4203,7 @@ function renderOficios(main) {
     if (btn) btn.addEventListener("click", async () => {
       const v = id => document.getElementById(id).value.trim() || null;
       const { error: e } = await sb.from("datos_institucion").update({
-        director_nombre: v("pqDirector"), cct_secundaria: v("pqCctSec"), rvoe_secundaria: v("pqRvoeSec"),
+        director_secundaria: v("pqDirSec"), director_preparatoria: v("pqDirPrep"), cct_secundaria: v("pqCctSec"), rvoe_secundaria: v("pqRvoeSec"),
         cct_preparatoria: v("pqCctPrep"), rvoe_preparatoria: v("pqRvoePrep"),
       }).eq("id", 1);
       document.getElementById("pqMsg").innerHTML = e ? errBox(escHtml(e.message)) : okBox("Datos guardados.");
@@ -4208,7 +4308,7 @@ function renderOficios(main) {
       const ctxActual = ctx;
       let calif = null;
       let avisosHtml = "";
-      if (!(ctxActual.plantel.director_nombre || "").trim() && !["Formato de inscripción"].includes(tipo)) avisosHtml += errBox('Falta el nombre del director. Captúralo en la pestaña "Datos del plantel".');
+      if (!directorDelNivel(ctxActual.plantel, ctxActual.insc?.grupos?.grados?.nivel) && !["Formato de inscripción"].includes(tipo)) avisosHtml += errBox('Falta el nombre del director. Captúralo en la pestaña "Datos del plantel".');
       if (ctxActual.insc.estado && ctxActual.insc.estado !== "Inscrito" && ["Constancia de estudios", "Constancia de estudios con calificaciones", "Formato de inscripción"].includes(tipo)) avisosHtml += errBox(`La inscripción de este alumno está en estado "${escHtml(ctxActual.insc.estado)}". Verifica antes de emitir la constancia.`);
       if (ctxActual.alumno.activo === false && ["Constancia de estudios", "Constancia de estudios con calificaciones"].includes(tipo)) avisosHtml += errBox("Este alumno está marcado como inactivo.");
       if (tipo === "Carta de buena conducta" && ctxActual.reportes.total > 0) {
