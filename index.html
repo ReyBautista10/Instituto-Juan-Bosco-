@@ -59,7 +59,7 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 const MENU = [
   { id: "inicio", label: "Inicio", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
-  { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: false },
+  { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
@@ -437,6 +437,7 @@ function renderSeccion() {
   if (state.seccion === "asistencia") return renderAsistencia(main);
   if (state.seccion === "bitacora") return renderBitacora(main);
   if (state.seccion === "boletas") return renderBoletas(main);
+  if (state.seccion === "oficios") return renderOficios(main);
   if (state.seccion === "disciplina") return renderDisciplina(main);
   if (state.seccion === "avisos") return renderAvisos(main);
 
@@ -3862,6 +3863,423 @@ function renderAvisos(main) {
       document.getElementById("avImprimirBtn").addEventListener("click", () => window.print());
       doc.scrollIntoView({ behavior: "smooth" });
     });
+  }
+}
+
+// ============================================================
+// Módulo Oficios y Documentos (constancias, cartas y formatos)
+// ============================================================
+const OFICIOS_TIPOS = [
+  { id: "Carta de buena conducta", corto: "CBC" },
+  { id: "Constancia de estudios", corto: "CE" },
+  { id: "Constancia de estudios con calificaciones", corto: "CEC" },
+  { id: "Formato de inscripción", corto: "FI" },
+  { id: "Formato de baja", corto: "FB" },
+];
+
+function generoAlumno(a) {
+  if (a.sexo === "Femenino") return { art: "la", alu: "alumna", del: "de la alumna", inscrito: "inscrita", regular: "alumna regular" };
+  if (a.sexo === "Masculino") return { art: "el", alu: "alumno", del: "del alumno", inscrito: "inscrito", regular: "alumno regular" };
+  return { art: "el(la)", alu: "alumno(a)", del: "del(la) alumno(a)", inscrito: "inscrito(a)", regular: "alumno(a) regular" };
+}
+const folioOficio = (numero, fechaISO) => `OF-${new Date(fechaISO).getFullYear()}-${String(numero).padStart(5, "0")}`;
+
+// Carga todo lo que necesitan los documentos de un alumno para un ciclo.
+async function cargarContextoOficio(alumnoId, cicloId) {
+  const [alRes, inscRes, tutRes, repRes, plantelRes, membrete] = await Promise.all([
+    sb.from("alumnos").select("*").eq("id", alumnoId).single(),
+    sb.from("inscripciones").select("grupo_id, ciclo_escolar_id, estado, fecha_inscripcion, grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre, fecha_inicio, fecha_fin)")
+      .eq("alumno_id", alumnoId).order("fecha_inscripcion", { ascending: false }),
+    sb.from("alumno_tutores").select("es_contacto_principal, tutores(nombre_completo, parentesco, telefono, correo, direccion)").eq("alumno_id", alumnoId).order("es_contacto_principal", { ascending: false }),
+    sb.from("reportes_disciplina").select("gravedad").eq("alumno_id", alumnoId),
+    sb.from("datos_institucion").select("*").eq("id", 1).maybeSingle(),
+    cargarMembrete(),
+  ]);
+  if (alRes.error) throw alRes.error;
+  const inscripciones = (inscRes.data || []).filter(i => i.grupos && i.grupos.grados && i.ciclos_escolares);
+  const insc = (cicloId && inscripciones.find(i => i.ciclo_escolar_id === cicloId)) || inscripciones[0] || null;
+  const reportes = repRes.data || [];
+  return {
+    alumno: alRes.data, inscripciones, insc,
+    tutores: (tutRes.data || []).map(t => t.tutores).filter(Boolean),
+    reportes: { total: reportes.length, graves: reportes.filter(r => r.gravedad !== "Leve").length },
+    plantel: plantelRes.data || {}, membrete,
+  };
+}
+
+// Calificaciones por materia y periodo (misma regla que la boleta).
+async function calificacionesDeAlumno(alumnoId, insc) {
+  const nivel = insc.grupos.grados.nivel;
+  const prefijo = nivel === "Preparatoria" ? "Bimestre" : "Parcial";
+  const periodos = [1, 2, 3, 4, 5].map(n => `${prefijo} ${n}`);
+  const { data: asig, error } = await sb.from("profesor_materias_grupos").select("id, materias(nombre)")
+    .eq("grupo_id", insc.grupo_id).eq("ciclo_escolar_id", insc.ciclo_escolar_id);
+  if (error) throw error;
+  const asignaciones = (asig || []).filter(a => a.materias);
+  const ids = asignaciones.map(a => a.id);
+  let criterios = [], califs = [];
+  if (ids.length) {
+    const { data: crit, error: e1 } = await sb.from("criterios_evaluacion").select("id, asignacion_id, periodo, ponderacion").in("asignacion_id", ids);
+    if (e1) throw e1;
+    criterios = crit || [];
+    if (criterios.length) {
+      const { data: cal, error: e2 } = await sb.from("calificaciones").select("criterio_id, valor").eq("alumno_id", alumnoId).in("criterio_id", criterios.map(c => c.id));
+      if (e2) throw e2;
+      califs = cal || [];
+    }
+  }
+  const valores = new Map(califs.map(c => [c.criterio_id, Number(c.valor)]));
+  const notaPeriodo = (asigId, p) => {
+    const cr = criterios.filter(c => c.asignacion_id === asigId && c.periodo === p);
+    if (!cr.some(c => valores.has(c.id))) return null;
+    return cr.reduce((t, c) => t + (valores.has(c.id) ? valores.get(c.id) * Number(c.ponderacion) / 100 : 0), 0);
+  };
+  const filas = asignaciones.map(a => {
+    const notas = periodos.map(p => notaPeriodo(a.id, p));
+    const cap = notas.filter(n => n != null);
+    return { materia: a.materias.nombre, notas, promedio: cap.length ? cap.reduce((s, n) => s + n, 0) / cap.length : null };
+  }).sort((x, y) => x.materia.localeCompare(y.materia, "es"));
+  const conProm = filas.filter(f => f.promedio != null);
+  return { prefijo, periodos, filas, general: conProm.length ? conProm.reduce((s, f) => s + f.promedio, 0) / conProm.length : null };
+}
+
+function lineaOficialPlantel(ctx) {
+  const nivel = ctx.insc?.grupos?.grados?.nivel;
+  const p = ctx.plantel || {};
+  const cct = nivel === "Preparatoria" ? p.cct_preparatoria : p.cct_secundaria;
+  const rvoe = nivel === "Preparatoria" ? p.rvoe_preparatoria : p.rvoe_secundaria;
+  const partes = [];
+  if (cct) partes.push("C.C.T. " + cct);
+  if (rvoe) partes.push("RVOE " + rvoe);
+  return partes.join(" · ");
+}
+
+function firmaOficio(rotulo, sub) {
+  return `<div style="text-align:center; width:42%"><div style="border-top:1px solid #1C2B3A; padding-top:4px" class="text-xs">${escHtml(rotulo)}${sub ? `<br><span style="color:#6C7B8A">${escHtml(sub)}</span>` : ""}</div></div>`;
+}
+
+// Construye el HTML de un documento. `calif` solo se usa en la constancia con calificaciones.
+function htmlOficio(tipo, ctx, op, folio, fechaEmision, calif) {
+  const a = ctx.alumno, g = generoAlumno(a), insc = ctx.insc;
+  const m = ctx.membrete;
+  const nombre = nombreCompletoAlumno(a).toUpperCase();
+  const plantelNombre = m.nombre.replace(/\n/g, " ");
+  const director = (ctx.plantel.director_nombre || "").trim();
+  const grado = insc ? `${insc.grupos.grados.nombre}, grupo "${insc.grupos.letra}"` : "";
+  const nivel = insc?.grupos?.grados?.nivel || "";
+  const ciclo = insc?.ciclos_escolares?.nombre || "";
+  const lineaOf = lineaOficialPlantel(ctx);
+  const ciudad = m.ciudad || "";
+  const lugarFecha = `${ciudad ? escHtml(ciudad) + ", a " : "A "}${fechaLarga(fechaEmision)}.`;
+  const cabecera = `${membreteHtml(m)}${lineaOf ? `<p class="text-xs text-center mb-2" style="color:#6C7B8A">${escHtml(lineaOf)}</p>` : ""}
+    <p class="text-xs text-right mb-3" style="color:#6C7B8A">${folio ? "Folio " + folio : "Vista previa (sin folio)"}</p>`;
+  const quien = `<strong>${escHtml(director || "[Nombre del director pendiente]")}</strong>, Director(a) de ${escHtml(plantelNombre)}${lineaOf ? " (" + escHtml(lineaOf) + ")" : ""}`;
+  const datosAlumno = `${g.art} ${g.alu} <strong>${escHtml(nombre)}</strong>${a.curp ? `, con CURP <strong>${escHtml(a.curp)}</strong>` : ""}${a.matricula ? ` y matrícula <strong>${escHtml(a.matricula)}</strong>` : ""}`;
+  const dirigido = `<p class="text-sm mb-4" style="color:#1C2B3A"><strong>${escHtml((op.dirigidoA || "A QUIEN CORRESPONDA").toUpperCase())}</strong><br>P r e s e n t e.</p>`;
+  const cierre = `
+    <p class="text-sm mb-2" style="color:#1C2B3A; text-align:justify">${op.fin ? `Se extiende la presente a petición de la parte interesada ${escHtml(op.fin)}.` : "Se extiende la presente a petición de la parte interesada, para los fines que a esta convengan."}</p>
+    <p class="text-sm mb-10" style="color:#1C2B3A">${lugarFecha}</p>
+    <p class="text-sm text-center mb-10" style="color:#1C2B3A">A t e n t a m e n t e</p>
+    <div class="flex justify-around mt-8">${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}${firmaOficio("Sello del plantel", "")}</div>`;
+  const estilo = "color:#1C2B3A; text-align:justify; line-height:1.7";
+
+  if (tipo === "Carta de buena conducta") {
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CARTA DE BUENA CONDUCTA</h3>${dirigido}
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, hace constar que ${datosAlumno}, ${insc ? `${g.inscrito} en este plantel y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> en el ciclo escolar <strong>${escHtml(ciclo)}</strong>, ` : ""}ha observado durante su permanencia en esta institución una <strong>buena conducta</strong>, mostrando respeto hacia sus compañeros, docentes y personal del plantel, así como cumplimiento de las normas del reglamento escolar.</p>
+      ${cierre}`;
+  }
+  if (tipo === "Constancia de estudios") {
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS</h3>${dirigido}
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando el grado de <strong>${escHtml(grado)}</strong> del nivel de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>${insc.ciclos_escolares.fecha_inicio ? `, comprendido de ${escHtml(mesAnio(insc.ciclos_escolares.fecha_inicio))} a ${escHtml(mesAnio(insc.ciclos_escolares.fecha_fin))}` : ""}.</p>
+      ${cierre}`;
+  }
+  if (tipo === "Constancia de estudios con calificaciones") {
+    const fmt = n => n == null ? "—" : n.toFixed(1);
+    const tabla = !calif || calif.filas.length === 0
+      ? `<p class="text-sm mb-3" style="color:#B5453A">Este grupo no tiene materias asignadas, por lo que no hay calificaciones que mostrar.</p>`
+      : `<table class="w-full text-xs mb-2" style="border-collapse:collapse; color:#1C2B3A">
+          <thead><tr style="background:#EEF2FB; color:#1E3A8A"><th class="text-left p-2" style="border:1px solid #D5DAE8">Materia</th>
+            ${calif.periodos.map((p, i) => `<th class="p-2" style="border:1px solid #D5DAE8">${calif.prefijo === "Parcial" ? "P" : "B"}${i + 1}</th>`).join("")}
+            <th class="p-2" style="border:1px solid #D5DAE8">Promedio</th></tr></thead>
+          <tbody>${calif.filas.map(f => `<tr><td class="p-2" style="border:1px solid #D5DAE8">${escHtml(f.materia)}</td>
+            ${f.notas.map(n => `<td class="p-2 text-center" style="border:1px solid #D5DAE8">${fmt(n)}</td>`).join("")}
+            <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(f.promedio)}</td></tr>`).join("")}
+            <tr style="background:#F4F1EB"><td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${calif.periodos.length + 1}">Promedio general</td><td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(calif.general)}</td></tr></tbody></table>
+        <p class="text-xs mb-3" style="color:#6C7B8A">${calif.prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación registrada.</p>`;
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS CON CALIFICACIONES</h3>${dirigido}
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando el grado de <strong>${escHtml(grado)}</strong> del nivel de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
+      ${tabla}${cierre}`;
+  }
+  if (tipo === "Formato de inscripción") {
+    const t = ctx.tutores;
+    const linea = (rot, val) => `<div class="mb-1"><strong>${rot}:</strong> ${val ? escHtml(val) : "_______________________________"}</div>`;
+    const docs = ["Acta de nacimiento (copia)", "CURP (copia)", "Certificado o boleta del grado anterior", "Fotografías tamaño infantil", "Comprobante de domicilio", "Identificación del padre, madre o tutor (copia)"];
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-3" style="color:#1E3A8A">FORMATO DE INSCRIPCIÓN</h3>
+      <div class="text-xs" style="color:#1C2B3A">
+        <p class="font-bold mb-1" style="color:#1E3A8A">Datos del alumno</p>
+        ${linea("Nombre", nombre)}${linea("CURP", a.curp)}${linea("Matrícula", a.matricula)}
+        ${linea("Fecha de nacimiento", a.fecha_nacimiento ? fechaLarga(a.fecha_nacimiento + "T00:00:00") : "")}${linea("Sexo", a.sexo)}
+        <p class="font-bold mt-3 mb-1" style="color:#1E3A8A">Inscripción</p>
+        ${linea("Nivel", nivel)}${linea("Grado y grupo", grado)}${linea("Ciclo escolar", ciclo)}
+        ${(t.length ? t : [{}]).slice(0, 2).map((x, i) => `
+          <p class="font-bold mt-3 mb-1" style="color:#1E3A8A">${i === 0 ? "Padre, madre o tutor (contacto principal)" : "Segundo tutor"}</p>
+          ${linea("Nombre", x.nombre_completo)}${linea("Parentesco", x.parentesco)}${linea("Celular / WhatsApp", x.telefono)}${linea("Correo", x.correo)}${linea("Domicilio", x.direccion)}`).join("")}
+        <p class="font-bold mt-3 mb-1" style="color:#1E3A8A">En caso de emergencia llamar a</p>
+        ${linea("Nombre y teléfono", "")}${linea("Alergias o condiciones médicas", "")}
+        <p class="font-bold mt-3 mb-1" style="color:#1E3A8A">Documentos entregados</p>
+        <div class="grid grid-cols-2 gap-x-4">${docs.map(d => `<div>☐ ${d}</div>`).join("")}</div>
+        <p class="mt-3" style="text-align:justify">El padre, madre o tutor manifiesta que los datos asentados son verdaderos y que conoce y acepta el reglamento escolar y el aviso de privacidad del plantel.</p>
+      </div>
+      <div class="flex justify-around mt-12">${firmaOficio("Padre, madre o tutor", "Nombre y firma")}${firmaOficio("Dirección o Control escolar", "")}</div>
+      <p class="text-xs mt-4" style="color:#6C7B8A">${lugarFecha}</p>`;
+  }
+  if (tipo === "Formato de baja") {
+    const fechaBaja = op.fechaBaja ? fechaLarga(op.fechaBaja + "T00:00:00") : "____ de ______________ de ________";
+    const t = ctx.tutores[0];
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">FORMATO DE BAJA DE ALUMNO</h3>
+      <div class="text-sm" style="${estilo}">
+        <p class="mb-3">Por medio del presente se hace constar la baja de ${datosAlumno}${insc ? `, ${g.inscrito} en <strong>${escHtml(grado)}</strong> del nivel de <strong>${escHtml(nivel)}</strong>, ciclo escolar <strong>${escHtml(ciclo)}</strong>` : ""}, con fecha <strong>${fechaBaja}</strong>.</p>
+        <p class="mb-1"><strong>Motivo de la baja:</strong></p>
+        <p class="mb-3" style="white-space:pre-line; border-bottom:1px solid #1C2B3A; min-height:1.8em">${escHtml(op.motivo || "")}</p>
+        <p class="mb-1"><strong>Documentos devueltos al interesado:</strong></p>
+        <div class="text-xs mb-3 grid grid-cols-2 gap-x-4"><div>☐ Acta de nacimiento</div><div>☐ CURP</div><div>☐ Certificado o boleta anterior</div><div>☐ Otros: ________________</div></div>
+        <p class="mb-3"><strong>Situación de pagos:</strong> ☐ Sin adeudo &nbsp;&nbsp; ☐ Con adeudo por $ ______________</p>
+        <p class="mb-3 text-xs">El padre, madre o tutor${t?.nombre_completo ? ` (<strong>${escHtml(t.nombre_completo)}</strong>)` : ""} manifiesta su conformidad con la baja y reconoce haber recibido la documentación señalada.</p>
+      </div>
+      <div class="flex justify-around mt-12">${firmaOficio("Padre, madre o tutor", t?.nombre_completo || "")}${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}</div>
+      <p class="text-xs mt-4" style="color:#6C7B8A">${lugarFecha}</p>`;
+  }
+  return "";
+}
+
+function renderOficios(main) {
+  const puedeConfig = ["Administrador", "Director"].includes(state.perfil.rol);
+  let tabActivo = "generar";
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Oficios y Documentos</h2>
+    <div class="flex gap-1 mb-4 flex-wrap">
+      <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="generar">Generar documento</button>
+      <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="emitidos">Emitidos</button>
+      <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="plantel">Datos del plantel</button>
+    </div>
+    <div id="ofContenido" class="max-w-3xl"></div>`;
+  function pintarTabs() {
+    document.querySelectorAll(".ofTabBtn").forEach(b => {
+      const activo = b.dataset.tab === tabActivo;
+      b.style.background = activo ? "#1E3A8A" : "#F4F1EB";
+      b.style.color = activo ? "#fff" : "#1E3A8A";
+    });
+  }
+  document.querySelectorAll(".ofTabBtn").forEach(b => b.addEventListener("click", () => { tabActivo = b.dataset.tab; pintarTabs(); cargarTab(); }));
+  pintarTabs();
+  cargarTab();
+  function cargarTab() {
+    const cont = document.getElementById("ofContenido");
+    if (tabActivo === "generar") renderGenerar(cont);
+    else if (tabActivo === "emitidos") renderEmitidos(cont);
+    else renderPlantel(cont);
+  }
+
+  // ---------- Datos del plantel ----------
+  async function renderPlantel(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("datos_institucion").select("*").eq("id", 1).maybeSingle();
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    const d = data || {};
+    const campo = (id, rot, val, ph) => `<div><label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">${rot}</label>
+      <input id="${id}" value="${escHtml(val || "")}" placeholder="${ph || ""}" ${puedeConfig ? "" : "disabled"} class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" /></div>`;
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Estos datos aparecen en las constancias, cartas y formatos.${puedeConfig ? "" : " Solo el Administrador o el Director pueden modificarlos."}</p>
+      <div class="p-4 rounded-xl bg-white border space-y-2" style="border-color:#E1DED5">
+        ${campo("pqDirector", "Nombre del Director(a) que firma", d.director_nombre, "Ej. Mtro. Juan Pérez López")}
+        <div class="grid grid-cols-2 gap-2">
+          ${campo("pqCctSec", "C.C.T. Secundaria", d.cct_secundaria)}${campo("pqRvoeSec", "RVOE Secundaria", d.rvoe_secundaria)}
+          ${campo("pqCctPrep", "C.C.T. Preparatoria", d.cct_preparatoria)}${campo("pqRvoePrep", "RVOE Preparatoria", d.rvoe_preparatoria)}
+        </div>
+        <div id="pqMsg"></div>
+        ${puedeConfig ? `<button id="pqGuardar" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar datos</button>` : ""}
+      </div>`;
+    const btn = document.getElementById("pqGuardar");
+    if (btn) btn.addEventListener("click", async () => {
+      const v = id => document.getElementById(id).value.trim() || null;
+      const { error: e } = await sb.from("datos_institucion").update({
+        director_nombre: v("pqDirector"), cct_secundaria: v("pqCctSec"), rvoe_secundaria: v("pqRvoeSec"),
+        cct_preparatoria: v("pqCctPrep"), rvoe_preparatoria: v("pqRvoePrep"),
+      }).eq("id", 1);
+      document.getElementById("pqMsg").innerHTML = e ? errBox(escHtml(e.message)) : okBox("Datos guardados.");
+    });
+  }
+
+  // ---------- Generar ----------
+  function renderGenerar(cont) {
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <div class="flex gap-2">
+          <input id="ofBuscar" placeholder="Buscar alumno por nombre o matrícula…" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+          <button id="ofBuscarBtn" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+        </div>
+        <div id="ofResultados" class="mt-2"></div>
+      </div>
+      <div id="ofPanel"></div>`;
+    document.getElementById("ofBuscarBtn").addEventListener("click", buscar);
+    document.getElementById("ofBuscar").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
+
+    async function buscar() {
+      const criterio = document.getElementById("ofBuscar").value.trim().replace(/[,()%*]/g, " ").trim();
+      const res = document.getElementById("ofResultados");
+      if (!criterio) { res.innerHTML = ""; return; }
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Buscando…</p>`;
+      const { data, error } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula, activo")
+        .or(`nombres.ilike.%${criterio}%,apellido_paterno.ilike.%${criterio}%,apellido_materno.ilike.%${criterio}%,matricula.ilike.%${criterio}%`)
+        .order("apellido_paterno").limit(15);
+      if (error) { res.innerHTML = errBox(escHtml(error.message)); return; }
+      const lista = data || [];
+      res.innerHTML = lista.length === 0 ? `<p class="text-xs" style="color:#6C7B8A">Sin resultados.</p>` : lista.map((a, i) => `
+        <button class="ofSel w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A; ${a.activo === false ? "opacity:0.6" : ""}">
+          ${escHtml(nombreCompletoAlumno(a))} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})${a.activo === false ? " · INACTIVO" : ""}</span></button>`).join("");
+      res.querySelectorAll(".ofSel").forEach(b => b.addEventListener("click", () => { res.innerHTML = ""; abrirPanel(lista[Number(b.dataset.i)].id); }));
+    }
+  }
+
+  async function abrirPanel(alumnoId, cicloIdInicial, tipoInicial) {
+    const panel = document.getElementById("ofPanel");
+    panel.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando datos del alumno…</p>`;
+    let ctx;
+    try { ctx = await cargarContextoOficio(alumnoId, cicloIdInicial); } catch (e) { panel.innerHTML = errBox(escHtml(e.message)); return; }
+    if (!ctx.insc) { panel.innerHTML = errBox("Este alumno no tiene inscripción registrada; no se pueden generar documentos."); return; }
+
+    panel.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(nombreCompletoAlumno(ctx.alumno))} <span class="text-xs font-normal" style="color:#6C7B8A">(${escHtml(ctx.alumno.matricula || "")})</span></p>
+        <label class="block text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Documento</label>
+        <select id="ofTipo" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
+          ${OFICIOS_TIPOS.map(t => `<option ${t.id === tipoInicial ? "selected" : ""}>${t.id}</option>`).join("")}
+        </select>
+        ${ctx.inscripciones.length > 1 ? `
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar</label>
+        <select id="ofCiclo" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
+          ${ctx.inscripciones.map(i => `<option value="${i.ciclo_escolar_id}" ${i.ciclo_escolar_id === ctx.insc.ciclo_escolar_id ? "selected" : ""}>${escHtml(i.ciclos_escolares.nombre)} — ${escHtml(i.grupos.grados.nombre)} "${escHtml(i.grupos.letra)}"</option>`).join("")}
+        </select>` : ""}
+        <div id="ofOpciones"></div>
+        <div id="ofAvisos"></div>
+      </div>
+      <div id="ofVista"></div>`;
+
+    const selTipo = document.getElementById("ofTipo");
+    const selCiclo = document.getElementById("ofCiclo");
+    if (selCiclo) selCiclo.addEventListener("change", () => abrirPanel(alumnoId, selCiclo.value, selTipo.value));
+    selTipo.addEventListener("change", () => { pintarOpciones(); pintarVista(); });
+    pintarOpciones();
+    pintarVista();
+
+    function opcionesActuales() {
+      const v = id => document.getElementById(id)?.value.trim() || "";
+      return {
+        dirigidoA: v("opDirigido"), fin: v("opFin"), fechaBaja: v("opFechaBaja"), motivo: v("opMotivo"),
+        marcarInactivo: !!document.getElementById("opInactivo")?.checked,
+      };
+    }
+
+    function pintarOpciones() {
+      const tipo = selTipo.value;
+      const o = document.getElementById("ofOpciones");
+      const input = "px-3 py-2 rounded-lg text-sm mb-2 outline-none border w-full";
+      if (["Carta de buena conducta", "Constancia de estudios", "Constancia de estudios con calificaciones"].includes(tipo)) {
+        o.innerHTML = `
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Dirigida a</label>
+          <input id="opDirigido" value="A quien corresponda" class="${input}" style="border-color:#E1DED5" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Finalidad (opcional, se agrega al final del texto)</label>
+          <input id="opFin" placeholder="Ej. para trámite de beca" class="${input}" style="border-color:#E1DED5" />`;
+      } else if (tipo === "Formato de baja") {
+        o.innerHTML = `
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha de la baja</label>
+          <input id="opFechaBaja" type="date" value="${fechaLocalISO()}" class="${input}" style="border-color:#E1DED5; width:auto" />
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Motivo de la baja</label>
+          <textarea id="opMotivo" rows="3" class="${input}" style="border-color:#E1DED5"></textarea>
+          <label class="flex items-center gap-2 text-xs mb-2" style="color:#B5453A"><input type="checkbox" id="opInactivo" /> Al emitir, marcar al alumno como inactivo en el sistema</label>`;
+      } else o.innerHTML = "";
+      o.querySelectorAll("input,textarea").forEach(el => el.addEventListener("input", pintarVista));
+    }
+
+    async function pintarVista() {
+      const tipo = selTipo.value;
+      const vista = document.getElementById("ofVista");
+      const avisos = document.getElementById("ofAvisos");
+      const ctxActual = ctx;
+      let calif = null;
+      let avisosHtml = "";
+      if (!(ctxActual.plantel.director_nombre || "").trim() && !["Formato de inscripción"].includes(tipo)) avisosHtml += errBox('Falta el nombre del director. Captúralo en la pestaña "Datos del plantel".');
+      if (ctxActual.insc.estado && ctxActual.insc.estado !== "Inscrito" && ["Constancia de estudios", "Constancia de estudios con calificaciones", "Formato de inscripción"].includes(tipo)) avisosHtml += errBox(`La inscripción de este alumno está en estado "${escHtml(ctxActual.insc.estado)}". Verifica antes de emitir la constancia.`);
+      if (ctxActual.alumno.activo === false && ["Constancia de estudios", "Constancia de estudios con calificaciones"].includes(tipo)) avisosHtml += errBox("Este alumno está marcado como inactivo.");
+      if (tipo === "Carta de buena conducta" && ctxActual.reportes.total > 0) {
+        avisosHtml += `<div class="text-xs mb-3 p-2 rounded-lg" style="background:${ctxActual.reportes.graves ? "#F5E4E1" : "#FDF3DC"}; color:${ctxActual.reportes.graves ? "#B5453A" : "#8A5A12"}">
+          Este alumno tiene <strong>${ctxActual.reportes.total}</strong> reporte(s) de disciplina${ctxActual.reportes.graves ? `, de los cuales <strong>${ctxActual.reportes.graves}</strong> son graves o muy graves` : " (todos leves)"}. Revísalo en el módulo Disciplina antes de emitir la carta.</div>`;
+      }
+      avisos.innerHTML = avisosHtml;
+
+      if (tipo === "Constancia de estudios con calificaciones") {
+        try { calif = await calificacionesDeAlumno(alumnoId, ctxActual.insc); } catch (e) { vista.innerHTML = errBox(escHtml(e.message)); return; }
+      }
+      if (selTipo.value !== tipo) return; // el usuario cambió de opción mientras cargaba
+      const op = opcionesActuales();
+      vista.innerHTML = `
+        <div id="ibOficioImprimible" class="ib-imprimible p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px">${htmlOficio(tipo, ctxActual, op, null, new Date(), calif)}</div>
+        <div id="ofMsg" class="mt-3"></div>
+        <button id="ofEmitir" class="w-56 mx-auto block mt-2 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Emitir e imprimir</button>
+        <p class="text-xs text-center mt-1" style="color:#6C7B8A">Al emitir se asigna un folio y queda registrado en "Emitidos".</p>`;
+      let emitiendo = false;
+      let yaEmitido = false;
+      document.getElementById("ofEmitir").addEventListener("click", async () => {
+        if (yaEmitido) { window.print(); return; }
+        if (emitiendo) return;
+        const op2 = opcionesActuales();
+        if (tipo === "Formato de baja" && op2.marcarInactivo && !confirm("Se marcará al alumno como INACTIVO en el sistema. ¿Continuar?")) return;
+        emitiendo = true;
+        const { data: nuevo, error } = await sb.from("oficios_emitidos").insert({
+          tipo, alumno_id: alumnoId, grupo_id: ctxActual.insc.grupo_id, ciclo_escolar_id: ctxActual.insc.ciclo_escolar_id, opciones: op2,
+        }).select("numero, creado_en").single();
+        if (error) { emitiendo = false; document.getElementById("ofMsg").innerHTML = errBox(escHtml(error.message)); return; }
+        if (tipo === "Formato de baja" && op2.marcarInactivo) await sb.from("alumnos").update({ activo: false }).eq("id", alumnoId);
+        document.getElementById("ibOficioImprimible").innerHTML = htmlOficio(tipo, ctxActual, op2, folioOficio(nuevo.numero, nuevo.creado_en), nuevo.creado_en, calif);
+        document.getElementById("ofEmitir").textContent = "Imprimir de nuevo";
+        document.getElementById("ofMsg").innerHTML = okBox(`Documento emitido con folio ${folioOficio(nuevo.numero, nuevo.creado_en)}.`);
+        emitiendo = false;
+        yaEmitido = true;
+        setTimeout(() => window.print(), 200);
+      }, { once: false });
+    }
+  }
+
+  // ---------- Emitidos ----------
+  async function renderEmitidos(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("oficios_emitidos")
+      .select("id, numero, tipo, alumno_id, grupo_id, ciclo_escolar_id, opciones, creado_en, alumnos(nombres, apellido_paterno, apellido_materno, matricula)")
+      .order("creado_en", { ascending: false }).limit(200);
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    const lista = data || [];
+    cont.innerHTML = (lista.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no se han emitido documentos.</p>` : lista.map((o, i) => `
+      <div class="p-3 rounded-xl bg-white border mb-2 flex justify-between items-center gap-2" style="border-color:#E1DED5">
+        <div class="min-w-0">
+          <div class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(o.tipo)}</div>
+          <div class="text-xs" style="color:#6C7B8A">${folioOficio(o.numero, o.creado_en)} · ${escHtml(o.alumnos ? nombreCompletoAlumno(o.alumnos) : "")} · ${fechaLarga(o.creado_en)}</div>
+        </div>
+        <button class="ofReimp px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap" data-i="${i}" style="background:#F4F1EB; color:#1E3A8A">Ver / reimprimir</button>
+      </div>`).join("")) + `<div id="ofReimpVista"></div>`;
+    cont.querySelectorAll(".ofReimp").forEach(b => b.addEventListener("click", async () => {
+      const o = lista[Number(b.dataset.i)];
+      const caja = document.getElementById("ofReimpVista");
+      caja.innerHTML = `<p class="text-xs mt-3" style="color:#6C7B8A">Generando…</p>`;
+      try {
+        const ctx = await cargarContextoOficio(o.alumno_id, o.ciclo_escolar_id);
+        const calif = o.tipo === "Constancia de estudios con calificaciones" && ctx.insc ? await calificacionesDeAlumno(o.alumno_id, ctx.insc) : null;
+        caja.innerHTML = `<div id="ibOficioImprimible" class="ib-imprimible p-6 rounded-xl bg-white border mt-4" style="border-color:#E1DED5; width:100%; max-width:760px">${htmlOficio(o.tipo, ctx, o.opciones || {}, folioOficio(o.numero, o.creado_en), o.creado_en, calif)}</div>
+          <p class="text-xs mt-2" style="color:#6C7B8A">Se regenera con los datos actuales del alumno; el folio y la fecha son los de la emisión original.</p>
+          <button id="ofReimpBtn" class="w-48 mx-auto block mt-2 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir</button>`;
+        document.getElementById("ofReimpBtn").addEventListener("click", () => window.print());
+        caja.scrollIntoView({ behavior: "smooth" });
+      } catch (e) { caja.innerHTML = errBox(escHtml(e.message)); }
+    }));
   }
 }
 
