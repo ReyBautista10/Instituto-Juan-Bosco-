@@ -26,7 +26,15 @@
   @keyframes ibBarra { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
   .ib-hoja { display: flex; flex-direction: column; min-height: 24cm; }
   .ib-hoja .ib-pie { margin-top: auto; }
+  @page { size: letter; margin: 1.2cm; }
+  #ibPrintHost { display: none; }
   @media print {
+    body.ib-imprimiendo > *:not(#ibPrintHost) { display: none !important; }
+    body.ib-imprimiendo #ibPrintHost { display: block !important; }
+    #ibPrintHost .ib-imprimible { position: static !important; visibility: visible !important; width: 100% !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; }
+    #ibPrintHost .ib-imprimible * { visibility: visible !important; }
+    #ibPrintHost .ib-hoja { min-height: 24.6cm; box-sizing: border-box; padding: 0 !important; border: none !important; border-radius: 0 !important; margin: 0 !important; }
+    #ibPrintHost .ib-hoja + .ib-hoja { margin-top: 0 !important; }
     body * { visibility: hidden; }
     .ib-imprimible, .ib-imprimible * { visibility: visible; }
     .ib-imprimible { position: absolute; top: 0; left: 0; }
@@ -430,6 +438,7 @@ function abrirModalCambiarPassword() {
 function renderSeccion() {
   const main = document.getElementById("main");
   if (typeof detenerCamara === "function") detenerCamara();
+  if (typeof detenerEscaneoInv === "function") detenerEscaneoInv();
   if (typeof limpiarTodosTimersReporte === "function") limpiarTodosTimersReporte();
   if (state.seccion === "inicio") return renderInicio(main);
   if (state.seccion === "mobiliario") return renderMobiliario(main);
@@ -488,6 +497,7 @@ function renderMobiliario(main) {
     <div class="flex gap-1 mb-4">
       <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="categorias">Categorías</button>
       <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="articulos">Artículos</button>
+      <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="revisar">Revisar inventario</button>
     </div>
     <div id="mobContenido"></div>`;
 
@@ -500,6 +510,7 @@ function renderMobiliario(main) {
   }
   document.querySelectorAll(".mobTabBtn").forEach(b => b.addEventListener("click", () => {
     tabActivo = b.dataset.tab;
+    detenerEscaneoInv();
     pintarTabs();
     cargarTab();
   }));
@@ -510,6 +521,7 @@ function renderMobiliario(main) {
     const cont = document.getElementById("mobContenido");
     if (tabActivo === "categorias") return renderCategorias(cont);
     if (tabActivo === "articulos") return renderArticulos(cont);
+    if (tabActivo === "revisar") return renderRevisarInventario(cont);
   }
 
   // ---------- Categorías ----------
@@ -607,7 +619,7 @@ function renderMobiliario(main) {
                   <p class="text-xs" style="color:#6C7B8A">${it.ubicacion || "Sin ubicación"} · Estado: ${it.estado}${!it.activo ? " · DADO DE BAJA" : ""}</p>
                 </div>
                 <div class="flex gap-1">
-                  <button class="artImprimirBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${it.id}" style="background:#F4F1EB; color:#1E3A8A">🖨️</button>
+                  <button class="artImprimirBtn px-2 py-1 rounded-lg text-xs font-semibold" title="Etiqueta con QR (imagen)" data-id="${it.id}" style="background:#F4F1EB; color:#1E3A8A">🏷️ QR</button>
                   <button class="artEditarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${it.id}" style="background:#F4F1EB; color:#1E3A8A">Editar</button>
                   <button class="artBajaBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${it.id}" data-activo="${it.activo}" style="background:${it.activo ? "#F5E4E1" : "#E6F0EA"}; color:${it.activo ? "#B5453A" : "#3F7A5E"}">${it.activo ? "Dar de baja" : "Reactivar"}</button>
                 </div>
@@ -638,7 +650,7 @@ function renderMobiliario(main) {
 
         document.getElementById("artLoteResultado").innerHTML = `
           ${okBox(`Se agregaron ${nuevos.length} artículo(s): ${nuevos.map(n => n.id_etiqueta).join(", ")}`)}
-          <button id="imprimirLoteBtn" class="mb-3 px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">🖨️ Imprimir etiquetas de este lote</button>`;
+          <button id="imprimirLoteBtn" class="mb-3 px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">🏷️ Descargar etiquetas de este lote (imágenes)</button>`;
 
         document.getElementById("imprimirLoteBtn").addEventListener("click", () => {
           mostrarEtiquetas(nuevos.map(n => ({ id_etiqueta: n.id_etiqueta, categoria_nombre: categoria.nombre })));
@@ -723,24 +735,277 @@ function renderMobiliario(main) {
     modal.className = "fixed inset-0 z-50 flex items-center justify-center p-4";
     modal.style.background = "rgba(28,43,58,0.7)";
     modal.innerHTML = `
-      <div class="bg-white rounded-xl p-4 max-w-lg w-full max-h-[80vh] overflow-y-auto">
-        <div id="ibEtiquetasImprimibles" class="ib-imprimible grid grid-cols-2 gap-2">
-          ${lista.map(it => `
-            <div class="border rounded-lg p-2 text-center" style="border-color:#1E3A8A">
-              <p class="text-[9px]" style="color:#6C7B8A">Instituto Juan Bosco</p>
-              <p class="text-xs" style="color:#1E3A8A">${it.categoria_nombre}</p>
-              <p class="text-lg font-bold" style="color:#1E3A8A">${it.id_etiqueta}</p>
-            </div>`).join("")}
-        </div>
+      <div class="bg-white rounded-xl p-4 max-w-lg w-full max-h-[85vh] overflow-y-auto">
+        <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Etiquetas con QR</p>
+        <p class="text-xs mb-3" style="color:#6C7B8A">Se descargan como imagen PNG de 5 cm × 3 cm (alta resolución), con el ID del mobiliario como nombre del archivo. Puedes juntarlas en una hoja carta para imprimir en papel adherible.</p>
+        <div id="etqLista" class="grid grid-cols-1 gap-3"><p class="text-xs" style="color:#6C7B8A">Generando etiquetas…</p></div>
         <div class="flex gap-2 mt-4">
           <button id="etiquetasCerrar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cerrar</button>
-          <button id="etiquetasImprimir" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir</button>
+          <button id="etiquetasTodas" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff" disabled>Descargar ${lista.length > 1 ? "todas" : "imagen"}</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
-    document.getElementById("etiquetasCerrar").addEventListener("click", () => modal.remove());
-    document.getElementById("etiquetasImprimir").addEventListener("click", () => window.print());
+    const urls = [];
+    document.getElementById("etiquetasCerrar").addEventListener("click", () => { urls.forEach(u => URL.revokeObjectURL(u.url)); modal.remove(); });
+    (async () => {
+      const caja = document.getElementById("etqLista");
+      try {
+        caja.innerHTML = "";
+        for (const it of lista) {
+          const blob = await generarEtiquetaPNG(it);
+          const url = URL.createObjectURL(blob);
+          urls.push({ url, nombre: it.id_etiqueta + ".png" });
+          const fila = document.createElement("div");
+          fila.className = "flex items-center gap-3";
+          fila.innerHTML = `<img src="${url}" alt="${escHtml(it.id_etiqueta)}" style="width:150px; height:90px; border:1px solid #E1DED5" />
+            <a href="${url}" download="${escHtml(it.id_etiqueta)}.png" class="px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#F4F1EB; color:#1E3A8A">Descargar ${escHtml(it.id_etiqueta)}.png</a>`;
+          caja.appendChild(fila);
+        }
+        const btn = document.getElementById("etiquetasTodas");
+        btn.disabled = false;
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          for (const u of urls) { descargarUrl(u.url, u.nombre); await esperar(500); }
+          btn.disabled = false;
+        });
+      } catch (e) { caja.innerHTML = errBox(escHtml(e.message)); }
+    })();
   }
+
+  // ---------- Revisar inventario (escaneo de etiquetas) ----------
+  async function renderRevisarInventario(cont) {
+    detenerEscaneoInv();
+    const escaneados = [];
+    cont.innerHTML = `
+      <div class="max-w-md">
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <video id="invVideo" class="w-full rounded-lg bg-black" style="max-height:300px; object-fit:cover" playsinline muted></video>
+          <p id="invEstado" class="text-xs mt-2" style="color:#6C7B8A">La cámara está apagada.</p>
+          <div class="flex gap-2 mt-2">
+            <button id="invIniciar" class="flex-1 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Escanear etiqueta</button>
+            <button id="invDetener" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A; display:none">Detener</button>
+          </div>
+          <div class="flex gap-2 mt-3">
+            <input id="invManual" placeholder="o escribe el ID (ej. BUT-001)" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border uppercase" style="border-color:#E1DED5" />
+            <button id="invBuscar" class="px-3 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Buscar</button>
+          </div>
+        </div>
+        <div id="invFicha"></div>
+        <div id="invHistorial"></div>
+      </div>`;
+    const $i = id => document.getElementById(id);
+    const estado = t => { const e = $i("invEstado"); if (e) e.textContent = t; };
+    $i("invIniciar").addEventListener("click", iniciar);
+    $i("invDetener").addEventListener("click", () => { detenerEscaneoInv(); botones(false); estado("La cámara está apagada."); });
+    $i("invBuscar").addEventListener("click", () => buscarCodigo($i("invManual").value));
+    $i("invManual").addEventListener("keydown", e => { if (e.key === "Enter") buscarCodigo($i("invManual").value); });
+    function botones(activo) { $i("invIniciar").style.display = activo ? "none" : ""; $i("invDetener").style.display = activo ? "" : "none"; }
+
+    async function iniciar() {
+      detenerEscaneoInv();
+      $i("invFicha").innerHTML = "";
+      estado("Abriendo cámara…");
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error("Este navegador no permite usar la cámara (se requiere conexión segura https).");
+        invStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+        const video = $i("invVideo");
+        video.srcObject = invStream;
+        await video.play();
+        let detector = null;
+        if ("BarcodeDetector" in window) { try { detector = new BarcodeDetector({ formats: ["qr_code"] }); } catch (e) { detector = null; } }
+        if (!detector) await cargarLibQR(INV_QR_LIBS, () => typeof window.jsQR === "function", "el lector de QR");
+        botones(true);
+        estado("Apunta la cámara al código QR de la etiqueta.");
+        const sesion = ++invSesion;
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        while (sesion === invSesion && invStream) {
+          let codigo = null;
+          try {
+            if (video.readyState >= 2 && video.videoWidth) {
+              if (detector) { const r = await detector.detect(video); if (r.length) codigo = r[0].rawValue; }
+              else {
+                const w = Math.min(640, video.videoWidth), h = Math.round(w * video.videoHeight / video.videoWidth);
+                canvas.width = w; canvas.height = h;
+                ctx.drawImage(video, 0, 0, w, h);
+                const q = window.jsQR(ctx.getImageData(0, 0, w, h).data, w, h);
+                if (q) codigo = q.data;
+              }
+            }
+          } catch (e) { /* reintenta */ }
+          if (codigo) { detenerEscaneoInv(); botones(false); estado("Etiqueta leída."); await buscarCodigo(codigo); return; }
+          await esperar(250);
+        }
+      } catch (e) {
+        detenerEscaneoInv(); botones(false);
+        estado("");
+        $i("invFicha").innerHTML = errBox(escHtml(e.message || "No se pudo abrir la cámara."));
+      }
+    }
+
+    async function buscarCodigo(texto) {
+      const codigo = String(texto || "").trim().toUpperCase();
+      if (!codigo) return;
+      const ficha = $i("invFicha");
+      ficha.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Buscando ${escHtml(codigo)}…</p>`;
+      const [itRes, catRes] = await Promise.all([
+        sb.from("mobiliario").select("*").eq("id_etiqueta", codigo).maybeSingle(),
+        sb.from("categorias_mobiliario").select("id, nombre"),
+      ]);
+      if (itRes.error) { ficha.innerHTML = errBox(escHtml(itRes.error.message)); return; }
+      if (!itRes.data) { ficha.innerHTML = errBox(`No existe un mobiliario con el ID "${escHtml(codigo)}".`); return; }
+      const cat = (catRes.data || []).find(c => c.id === itRes.data.categoria_id);
+      await pintarFicha(itRes.data, cat?.nombre || "");
+    }
+
+    async function pintarFicha(item, catNombre) {
+      const ficha = $i("invFicha");
+      let movs = [];
+      try {
+        const { data } = await sb.from("mobiliario_movimientos").select("*").eq("mobiliario_id", item.id).order("creado_en", { ascending: false }).limit(5);
+        movs = data || [];
+      } catch (e) { /* tabla aún no creada */ }
+      const i = escaneados.findIndex(x => x.id_etiqueta === item.id_etiqueta);
+      const reg = { id_etiqueta: item.id_etiqueta, ubicacion: item.ubicacion, estado: item.estado, activo: item.activo };
+      if (i >= 0) escaneados[i] = reg; else escaneados.unshift(reg);
+      pintarHistorial();
+      const colorEstado = item.estado === "Bueno" ? "#3F7A5E" : item.estado === "Regular" ? "#B7791F" : "#B5453A";
+      ficha.innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5; ${item.activo ? "" : "opacity:.85"}">
+          <p class="text-lg font-bold" style="color:#1E3A8A">${escHtml(item.id_etiqueta)}${item.activo ? "" : ' <span class="text-xs" style="color:#B5453A">DADO DE BAJA</span>'}</p>
+          <p class="text-sm" style="color:#1C2B3A">${escHtml(catNombre)}${item.descripcion ? " — " + escHtml(item.descripcion) : ""}</p>
+          <div class="text-xs mt-2 space-y-1" style="color:#1C2B3A">
+            <p><strong>Ubicación:</strong> ${escHtml(item.ubicacion || "Sin ubicación")}</p>
+            <p><strong>Estado:</strong> <span style="color:${colorEstado}; font-weight:700">${escHtml(item.estado)}</span></p>
+            ${item.numero_serie ? `<p><strong>No. de serie:</strong> ${escHtml(item.numero_serie)}</p>` : ""}
+            ${item.fecha_adquisicion ? `<p><strong>Adquisición:</strong> ${escHtml(item.fecha_adquisicion)}</p>` : ""}
+            ${item.observaciones ? `<p><strong>Observaciones:</strong> ${escHtml(item.observaciones)}</p>` : ""}
+            ${!item.activo && item.motivo_baja ? `<p style="color:#B5453A"><strong>Motivo de baja:</strong> ${escHtml(item.motivo_baja)}${item.fecha_baja ? " (" + escHtml(item.fecha_baja) + ")" : ""}</p>` : ""}
+          </div>
+          <div class="flex gap-2 flex-wrap mt-3">
+            ${item.activo ? `<button class="invAcc px-3 py-1.5 rounded-lg text-xs font-bold" data-a="mover" style="background:#EEF2FB; color:#1E3A8A">Mover de salón</button>
+            <button class="invAcc px-3 py-1.5 rounded-lg text-xs font-bold" data-a="estado" style="background:#EEF2FB; color:#1E3A8A">Estado / observación</button>
+            <button class="invAcc px-3 py-1.5 rounded-lg text-xs font-bold" data-a="baja" style="background:#FBEAE8; color:#B5453A">Dar de baja</button>` :
+            `<button class="invAcc px-3 py-1.5 rounded-lg text-xs font-bold" data-a="reactivar" style="background:#E6F0EA; color:#3F7A5E">Reactivar</button>`}
+          </div>
+          <div id="invAccion" class="mt-3"></div>
+          ${movs.length ? `<p class="text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Últimos movimientos</p>
+            ${movs.map(m => `<p class="text-xs" style="color:#6C7B8A">${new Date(m.creado_en).toLocaleDateString("es-MX")} · <strong>${escHtml(m.tipo)}</strong>${m.detalle ? ": " + escHtml(m.detalle) : ""}</p>`).join("")}` : ""}
+        </div>`;
+      ficha.querySelectorAll(".invAcc").forEach(b => b.addEventListener("click", () => accion(b.dataset.a, item, catNombre)));
+    }
+
+    function pintarHistorial() {
+      const h = $i("invHistorial");
+      if (!h) return;
+      h.innerHTML = escaneados.length ? `
+        <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Revisados en esta sesión (${escaneados.length})</p>
+          ${escaneados.map(x => `<p class="text-xs py-1" style="border-top:1px solid #F0EDE6; color:#1C2B3A"><strong>${escHtml(x.id_etiqueta)}</strong> · ${escHtml(x.ubicacion || "Sin ubicación")} · ${escHtml(x.estado)}${x.activo ? "" : " · BAJA"}</p>`).join("")}
+        </div>` : "";
+    }
+
+    async function guardarCambio(item, cambios, tipo, detalle, extra) {
+      const { error } = await sb.from("mobiliario").update(cambios).eq("id", item.id);
+      if (error) throw error;
+      try {
+        await sb.from("mobiliario_movimientos").insert({ mobiliario_id: item.id, tipo, detalle: detalle || null, registrado_por: state.perfil.id, ...extra });
+      } catch (e) { /* el historial es complementario */ }
+    }
+
+    function accion(tipo, item, catNombre) {
+      const caja = $i("invAccion");
+      const botonesAcc = `<div id="invAccMsg" class="mb-2"></div><div class="flex gap-2"><button id="invAccCancelar" class="px-3 py-1.5 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button><button id="invAccOk" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar</button></div>`;
+      const estilo = 'class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5"';
+      if (tipo === "mover") caja.innerHTML = `<p class="text-xs mb-1" style="color:#6C7B8A">Nueva ubicación. El ID y la etiqueta no cambian porque no incluyen el salón.</p><input id="invNuevaUbic" placeholder="Ej. Aula 3B" value="${escHtml(item.ubicacion || "")}" ${estilo} />${botonesAcc}`;
+      if (tipo === "estado") caja.innerHTML = `<select id="invNuevoEstado" ${estilo}>${ESTADOS_MOBILIARIO.map(e => `<option ${e === item.estado ? "selected" : ""}>${e}</option>`).join("")}</select><textarea id="invObs" rows="2" placeholder="Observación (ej. pata floja, rayones, sin daños)" ${estilo}></textarea>${botonesAcc}`;
+      if (tipo === "baja") caja.innerHTML = `<p class="text-xs mb-1" style="color:#B5453A">El mobiliario quedará dado de baja (no se elimina; se conserva el historial).</p><input id="invMotivoBaja" placeholder="Motivo de la baja (obligatorio)" ${estilo} />${botonesAcc}`;
+      if (tipo === "reactivar") caja.innerHTML = `<p class="text-xs mb-1" style="color:#6C7B8A">El mobiliario volverá a estar activo.</p>${botonesAcc}`;
+      $i("invAccCancelar").addEventListener("click", () => { caja.innerHTML = ""; });
+      $i("invAccOk").addEventListener("click", async () => {
+        const msg = $i("invAccMsg"), ok = $i("invAccOk");
+        try {
+          ok.disabled = true;
+          if (tipo === "mover") {
+            const nueva = $i("invNuevaUbic").value.trim();
+            if (!nueva) { msg.innerHTML = errBox("Escribe la nueva ubicación."); ok.disabled = false; return; }
+            await guardarCambio(item, { ubicacion: nueva }, "Cambio de ubicación", `${item.ubicacion || "Sin ubicación"} → ${nueva}`, { ubicacion_anterior: item.ubicacion || null, ubicacion_nueva: nueva });
+          } else if (tipo === "estado") {
+            const nuevo = $i("invNuevoEstado").value, obs = $i("invObs").value.trim();
+            const cambios = { estado: nuevo }; if (obs) cambios.observaciones = obs;
+            await guardarCambio(item, cambios, "Cambio de estado", `${item.estado} → ${nuevo}${obs ? ". " + obs : ""}`, { estado_anterior: item.estado, estado_nuevo: nuevo });
+          } else if (tipo === "baja") {
+            const motivo = $i("invMotivoBaja").value.trim();
+            if (!motivo) { msg.innerHTML = errBox("Escribe el motivo de la baja."); ok.disabled = false; return; }
+            await guardarCambio(item, { activo: false, motivo_baja: motivo, fecha_baja: fechaLocalISO(new Date()) }, "Baja", motivo, {});
+          } else {
+            await guardarCambio(item, { activo: true, motivo_baja: null, fecha_baja: null }, "Reactivación", null, {});
+          }
+          await buscarCodigo(item.id_etiqueta);
+        } catch (e) { ok.disabled = false; msg.innerHTML = errBox(escHtml(e.message)); }
+      });
+    }
+  }
+}
+
+// ---------- Utilidades de etiquetas con QR ----------
+const QR_GEN_LIBS = ["https://unpkg.com/qrcode@1.5.0/build/qrcode.js", "https://cdn.jsdelivr.net/npm/qrcode@1.5.0/build/qrcode.js"];
+const INV_QR_LIBS = ["https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js", "https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"];
+let invStream = null;
+let invSesion = 0;
+function detenerEscaneoInv() {
+  invSesion++;
+  if (invStream) { invStream.getTracks().forEach(t => t.stop()); invStream = null; }
+}
+async function cargarLibQR(urls, listo, nombre) {
+  if (listo()) return;
+  for (const u of urls) { try { await cargarScriptExterno(u); if (listo()) return; } catch (e) { /* prueba la siguiente */ } }
+  throw new Error(`No se pudo cargar ${nombre || "la librería de QR"}. Revisa la conexión a internet.`);
+}
+const CRC_TABLA = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(bytes) { let c = 0xFFFFFFFF; for (const b of bytes) c = CRC_TABLA[(c ^ b) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+// Inserta la resolución (dpi) en el PNG para que al abrirlo en un editor mida exactamente lo planeado (5 × 3 cm).
+async function pngConDpi(blob, dpi) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  const ppm = Math.round(dpi / 0.0254);
+  const chunk = new Uint8Array(21);
+  const dv = new DataView(chunk.buffer);
+  dv.setUint32(0, 9);
+  chunk.set([0x70, 0x48, 0x59, 0x73], 4);
+  dv.setUint32(8, ppm); dv.setUint32(12, ppm); chunk[16] = 1;
+  dv.setUint32(17, crc32(chunk.subarray(4, 17)));
+  const out = new Uint8Array(buf.length + 21);
+  out.set(buf.subarray(0, 33), 0); out.set(chunk, 33); out.set(buf.subarray(33), 54);
+  return new Blob([out], { type: "image/png" });
+}
+// Etiqueta de 5 cm × 3 cm a 600 dpi (1181 × 709 px): QR a la izquierda; categoría e ID a la derecha.
+async function generarEtiquetaPNG(item) {
+  await cargarLibQR(QR_GEN_LIBS, () => window.QRCode && typeof window.QRCode.toCanvas === "function", "el generador de QR");
+  const W = 1181, H = 709;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "#1E3A8A"; ctx.lineWidth = 6; ctx.strokeRect(6, 6, W - 12, H - 12);
+  const qc = document.createElement("canvas");
+  await window.QRCode.toCanvas(qc, item.id_etiqueta, { errorCorrectionLevel: "M", margin: 1, width: 560, color: { dark: "#000000", light: "#ffffff" } });
+  ctx.drawImage(qc, 40, (H - 560) / 2, 560, 560);
+  const x = 640, ancho = W - x - 40;
+  const ajustar = (txt, peso, max, min) => { let px = max; do { ctx.font = `${peso} ${px}px Arial, Helvetica, sans-serif`; px -= 4; } while (ctx.measureText(txt).width > ancho && px > min); };
+  ctx.fillStyle = "#1E3A8A"; ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
+  ajustar("Juan Bosco Instituto", "bold", 44, 24); ctx.fillText("Juan Bosco Instituto", x, 150);
+  ctx.fillStyle = "#1C2B3A";
+  ajustar(item.categoria_nombre || "", "normal", 54, 24); ctx.fillText(item.categoria_nombre || "", x, 270);
+  ctx.fillStyle = "#1E3A8A";
+  ajustar(item.id_etiqueta, "bold", 150, 40); ctx.fillText(item.id_etiqueta, x, 450);
+  ctx.fillStyle = "#6C7B8A"; ctx.font = "normal 34px Arial, Helvetica, sans-serif"; ctx.fillText("Inventario", x, 560);
+  const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+  return pngConDpi(blob, 600);
+}
+function descargarUrl(url, nombre) {
+  const a = document.createElement("a");
+  a.href = url; a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 // ============================================================
@@ -2416,7 +2681,7 @@ async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
         <button id="cfCerrar" class="px-4 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cerrar</button>
       </div>
     </div>`;
-  document.getElementById("cfImprimir").addEventListener("click", () => window.print());
+  document.getElementById("cfImprimir").addEventListener("click", () => imprimirSolo(null));
   const expBtn = document.getElementById("cfExpGuardar");
   if (expBtn) {
     const chkAviso = document.getElementById("cfExpAviso");
@@ -2885,7 +3150,7 @@ async function renderAvisoPrivacidad(main) {
         <button id="avImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>
       </div>`;
 
-    document.getElementById("avImprimirBtn").addEventListener("click", () => window.print());
+    document.getElementById("avImprimirBtn").addEventListener("click", () => imprimirSolo(null));
     document.getElementById("avTipoSel").addEventListener("change", e => { docTipo = e.target.value; pintar(); });
     const dSel = document.getElementById("avDocenteSel");
     if (dSel) dSel.addEventListener("change", e => { docenteId = e.target.value; pintar(); });
@@ -2974,14 +3239,25 @@ function colConstruirCargos(alumnoId, ciclo, modalidad, tarifas, exenciones) {
   return filas;
 }
 
-// Imprime solo un bloque (oculta temporalmente los demás .ib-imprimible de la pantalla).
+// Imprime solo lo indicado: copia los bloques a un contenedor de impresión y oculta el resto de la app
+// (así no salen hojas en blanco y el documento ocupa toda la hoja carta).
+function imprimirElementos(els) {
+  const visibles = els.filter(e => e && e.offsetParent !== null);
+  if (!visibles.length) { window.print(); return; }
+  document.getElementById("ibPrintHost")?.remove();
+  const host = document.createElement("div");
+  host.id = "ibPrintHost";
+  visibles.forEach(e => { const c = e.cloneNode(true); c.removeAttribute("id"); host.appendChild(c); });
+  document.body.appendChild(host);
+  document.body.classList.add("ib-imprimiendo");
+  const limpiar = () => { document.body.classList.remove("ib-imprimiendo"); host.remove(); };
+  window.addEventListener("afterprint", limpiar, { once: true });
+  setTimeout(() => window.print(), 50);
+  setTimeout(limpiar, 120000);
+}
 function imprimirSolo(id) {
-  const otros = [...document.querySelectorAll(".ib-imprimible")].filter(e => e.id !== id);
-  otros.forEach(e => e.classList.add("ib-oculto-impr"));
-  const restaurar = () => otros.forEach(e => e.classList.remove("ib-oculto-impr"));
-  window.addEventListener("afterprint", restaurar, { once: true });
-  window.print();
-  setTimeout(restaurar, 1500);
+  const el = id ? document.getElementById(id) : null;
+  imprimirElementos(el ? [el] : [...document.querySelectorAll(".ib-imprimible")]);
 }
 
 function colALetras(n) {
@@ -3028,6 +3304,7 @@ async function colTraerTodo(mk) {
 function renderColegiaturas(main) {
   const esAdmin = state.perfil.rol === "Administrador";
   const puedeCondonar = ["Administrador", "Director"].includes(state.perfil.rol);
+  const puedeCostos = puedeCondonar;
   let tabActivo = "cobranza";
   const $ = id => document.getElementById(id);
   const nombreCiclo = c => `${c.nivel} · ${c.nombre}`;
@@ -3140,7 +3417,7 @@ function renderColegiaturas(main) {
 
     const estado = c => {
       if (Number(c.monto) === 0) return ["Exento", "#3F7A5E"];
-      if (Number(c.saldo) <= 0.004) return ["Pagado", "#3F7A5E"];
+      if (Number(c.saldo) <= 0.004) return [Number(c.condonado) > 0 ? "Condonado" : "Pagado", "#3F7A5E"];
       if (c.fecha_vencimiento < hoy) return [Number(c.pagado) > 0 ? "Parcial vencido" : "Vencido", "#B5453A"];
       return [Number(c.pagado) > 0 ? "Parcial" : "Pendiente", "#B7791F"];
     };
@@ -3177,11 +3454,11 @@ function renderColegiaturas(main) {
             ${cargos.map(c => { const [e, col] = estado(c); return `<tr style="border-top:1px solid #E1DED5">
               <td class="p-1.5">${escHtml(c.descripcion)}</td>
               <td class="p-1.5">${fechaLarga(c.fecha_vencimiento + "T12:00:00")}</td>
-              <td class="p-1.5 text-right">${Number(c.descuento) > 0 ? `<span style="text-decoration:line-through; color:#6C7B8A">${mxn(c.monto_original)}</span><br>` : ""}${mxn(c.monto)}${Number(c.recargo) > 0 ? `<br><span style="color:#B5453A">+ recargo por morosidad ${mxn(c.recargo)}</span>${puedeCondonar ? ` <button class="coCondonar no-print px-1.5 py-0.5 rounded text-xs" data-id="${c.id}" style="background:#FBEAE8; color:#B5453A">Condonar</button>` : ""}` : ""}</td>
+              <td class="p-1.5 text-right">${Number(c.descuento) > 0 ? `<span style="text-decoration:line-through; color:#6C7B8A">${mxn(c.monto_original)}</span><br>` : ""}${mxn(c.monto)}${Number(c.recargo) > 0 ? `<br><span style="color:#B5453A">+ recargo por morosidad ${mxn(c.recargo)}</span>` : ""}${c.recargo_condonado ? `<br><span style="color:#3F7A5E">recargo condonado</span>` : ""}${Number(c.condonado) > 0 ? `<br><span style="color:#3F7A5E">condonado ${mxn(c.condonado)}</span>` : ""}</td>
               <td class="p-1.5 text-right">${mxn(c.pagado)}</td>
               <td class="p-1.5 text-right font-semibold">${mxn(c.saldo)}</td>
               <td class="p-1.5" style="color:${col}; font-weight:600">${e}</td>
-              <td class="p-1.5 no-print">${Number(c.saldo) > 0.004 ? `<button class="coPagar px-2 py-1 rounded-lg text-xs font-bold" data-id="${c.id}" style="background:#3F7A5E; color:#fff">Cobrar</button>` : ""}</td>
+              <td class="p-1.5 no-print" style="white-space:nowrap">${Number(c.saldo) > 0.004 ? `<button class="coPagar px-2 py-1 rounded-lg text-xs font-bold" data-id="${c.id}" style="background:#3F7A5E; color:#fff">Cobrar</button>${puedeCondonar && !c.recargo_condonado && !(Number(c.condonado) > 0) ? ` <button class="coCondonar px-2 py-1 rounded-lg text-xs font-bold" data-id="${c.id}" style="background:#FBEAE8; color:#B5453A">Condonar</button>` : ""}` : ""}</td>
             </tr>`; }).join("")}
             </tbody>
           </table></div>
@@ -3214,11 +3491,33 @@ function renderColegiaturas(main) {
       recargar();
     });
 
-    caja.querySelectorAll(".coCondonar").forEach(b => b.addEventListener("click", async () => {
-      if (!confirm("¿Condonar el recargo por morosidad de este cargo? Quedará registrado en la bitácora.")) return;
-      const { error: e } = await sb.rpc("condonar_recargo", { p_cargo: b.dataset.id });
-      if (e) { $("coForm").innerHTML = errBox(escHtml(e.message)); return; }
-      recargar();
+    caja.querySelectorAll(".coCondonar").forEach(b => b.addEventListener("click", () => {
+      const c = cargos.find(x => x.id === b.dataset.id);
+      const hayRecargo = Number(c.recargo) > 0;
+      $("coForm").innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Condonar: ${escHtml(c.descripcion)}</p>
+          <label class="flex items-start gap-2 text-sm mb-1" style="${hayRecargo ? "" : "opacity:.5"}"><input type="radio" name="cdAlc" value="recargo" ${hayRecargo ? "checked" : "disabled"} class="mt-1" /> <span>Solo el <strong>recargo por atraso</strong> (${mxn(c.recargo)})${hayRecargo ? "" : " — este cargo no tiene recargo"}</span></label>
+          <label class="flex items-start gap-2 text-sm mb-2"><input type="radio" name="cdAlc" value="total" ${hayRecargo ? "" : "checked"} class="mt-1" /> <span>Todo el saldo de este concepto (<strong>${mxn(c.saldo)}</strong>)</span></label>
+          <input id="cdMotivo" placeholder="Motivo (obligatorio)" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
+          <div id="cdMsg"></div>
+          <div class="flex gap-2">
+            <button id="cdCancelar" class="px-3 py-1.5 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
+            <button id="cdOk" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#B5453A; color:#fff">Confirmar condonación</button>
+          </div>
+        </div>`;
+      $("coForm").scrollIntoView({ behavior: "smooth" });
+      $("cdCancelar").addEventListener("click", () => { $("coForm").innerHTML = ""; });
+      $("cdOk").addEventListener("click", async () => {
+        const motivo = $("cdMotivo").value.trim();
+        if (!motivo) { $("cdMsg").innerHTML = errBox("Escribe el motivo de la condonación."); return; }
+        const alc = document.querySelector('input[name="cdAlc"]:checked').value;
+        if (!confirm(alc === "total" ? `¿Condonar TODO el saldo (${mxn(c.saldo)}) de "${c.descripcion}"?` : `¿Condonar el recargo (${mxn(c.recargo)}) de "${c.descripcion}"?`)) return;
+        $("cdOk").disabled = true;
+        const { error: e } = await sb.rpc("condonar_cargo", { p_cargo: c.id, p_alcance: alc, p_motivo: motivo });
+        if (e) { $("cdOk").disabled = false; $("cdMsg").innerHTML = errBox(escHtml(e.message)); return; }
+        recargar();
+      });
     }));
 
     const imp = $("coImprimirEdo");
@@ -3420,7 +3719,7 @@ function renderColegiaturas(main) {
             </table></div>
           </div>
           <button id="adImp" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir lista</button>`;
-        const imp = $("adImp"); if (imp) imp.addEventListener("click", () => window.print());
+        const imp = $("adImp"); if (imp) imp.addEventListener("click", () => imprimirSolo(null));
         res.querySelectorAll(".adWa").forEach(b => b.addEventListener("click", () => {
           const f = filas[Number(b.dataset.i)], t = tutores.get(f.alumno.id);
           const detalle = (f.vencidos.length ? f.vencidos : []).map(c => `• ${c.descripcion}: ${mxn(c.saldo)}`).join("\n");
@@ -3463,7 +3762,7 @@ function renderColegiaturas(main) {
             <tbody>${pagos.map(p => `<tr style="border-top:1px solid #E1DED5"><td class="p-1.5">REC-${String(p.folio).padStart(5, "0")}</td><td class="p-1.5">${p.fecha}</td><td class="p-1.5">${escHtml(al.get(p.alumno_id) ? nombreCompletoAlumno(al.get(p.alumno_id)) : "")}</td><td class="p-1.5">${escHtml(cg.get(p.cargo_id)?.descripcion || "")}</td><td class="p-1.5">${escHtml(p.forma_pago)}</td><td class="p-1.5 text-right">${mxn(p.monto)}</td></tr>`).join("")}</tbody></table>
           </div>
           <button id="ccImp" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir corte</button>`;
-        const b = $("ccImp"); if (b) b.addEventListener("click", () => window.print());
+        const b = $("ccImp"); if (b) b.addEventListener("click", () => imprimirSolo(null));
       } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
     });
   }
@@ -3522,7 +3821,7 @@ function renderColegiaturas(main) {
   async function tabTarifas(cont) {
     const cs = await ciclos();
     cont.innerHTML = `
-      <p class="text-xs mb-3" style="color:#6C7B8A">Define los montos de cada ciclo. Deja vacío (o en 0) el concepto que no se cobre. ${esAdmin ? "" : "Solo el Administrador puede modificarlas."}</p>
+      <p class="text-xs mb-3" style="color:#6C7B8A">Define los montos de cada ciclo. Deja vacío (o en 0) el concepto que no se cobre. ${puedeCostos ? "" : "Solo el Administrador o el Director pueden modificarlas."}</p>
       <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
         <select id="tfCiclo" class="w-full px-3 py-2 rounded-lg text-sm border mb-3" style="border-color:#E1DED5">${cs.map(c => `<option value="${c.id}" ${c.activo ? "selected" : ""}>${escHtml(nombreCiclo(c))}</option>`).join("")}</select>
         <div id="tfCampos"></div>
@@ -3530,19 +3829,19 @@ function renderColegiaturas(main) {
           <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Recargo por morosidad</p>
           <p class="text-xs mb-2" style="color:#6C7B8A">Se aplica una sola vez a cada cargo que no se pague a más tardar en su fecha de vencimiento (no aplica a "otros cargos").</p>
           <div class="flex gap-2 items-center">
-            <select id="rcTipo" ${esAdmin ? "" : "disabled"} class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="Porcentaje">Porcentaje del cargo</option><option value="Monto fijo">Monto fijo por cargo</option></select>
-            <input id="rcValor" type="number" min="0" step="0.01" ${esAdmin ? "" : "disabled"} class="w-28 px-3 py-2 rounded-lg text-sm border text-right" style="border-color:#E1DED5" />
+            <select id="rcTipo" ${puedeCostos ? "" : "disabled"} class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="Porcentaje">Porcentaje del cargo</option><option value="Monto fijo">Monto fijo por cargo</option></select>
+            <input id="rcValor" type="number" min="0" step="0.01" ${puedeCostos ? "" : "disabled"} class="w-28 px-3 py-2 rounded-lg text-sm border text-right" style="border-color:#E1DED5" />
             <span id="rcUnidad" class="text-sm">%</span>
           </div>
         </div>
         <div id="tfMsg" class="mt-2"></div>
-        ${esAdmin ? `<button id="tfGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar tarifas</button>` : ""}
+        ${puedeCostos ? `<button id="tfGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar tarifas</button>` : ""}
       </div>`;
     async function pintar() {
       const t = await tarifasDeCiclo($("tfCiclo").value);
       $("tfCampos").innerHTML = COL_CONCEPTOS.map((c, i) => `
         <div class="flex items-center gap-2 mb-2"><label class="flex-1 text-sm" style="color:#1C2B3A">${c}${c === "Colegiatura mensual" ? " (por mes)" : c === "Colegiatura bimestral" ? " (por bimestre)" : ""}</label>
-        <input id="tf${i}" type="number" min="0" step="0.01" value="${t[c] || ""}" ${esAdmin ? "" : "disabled"} placeholder="$ 0.00" class="w-36 px-3 py-2 rounded-lg text-sm border outline-none text-right" style="border-color:#E1DED5" /></div>`).join("");
+        <input id="tf${i}" type="number" min="0" step="0.01" value="${t[c] || ""}" ${puedeCostos ? "" : "disabled"} placeholder="$ 0.00" class="w-36 px-3 py-2 rounded-lg text-sm border outline-none text-right" style="border-color:#E1DED5" /></div>`).join("");
     }
     $("tfCiclo").addEventListener("change", pintar);
     pintar();
@@ -4258,7 +4557,7 @@ function renderBoletas(main) {
         <p class="text-xs mt-4" style="color:#6C7B8A">Expedida el ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
       </div>
       <button id="boImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
-    document.getElementById("boImprimirBtn").addEventListener("click", () => window.print());
+    document.getElementById("boImprimirBtn").addEventListener("click", () => imprimirSolo(null));
   }
 }
 
@@ -4690,7 +4989,7 @@ function renderDisciplina(main) {
       const doc = document.getElementById("rdDoc");
       doc.innerHTML = `<div id="ibDisciplinaImprimible" class="ib-imprimible ib-hoja p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px">${html}</div>
         <button id="rdImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
-      document.getElementById("rdImprimirBtn").addEventListener("click", () => window.print());
+      document.getElementById("rdImprimirBtn").addEventListener("click", () => imprimirSolo(null));
       doc.scrollIntoView({ behavior: "smooth" });
     }
 
@@ -4924,7 +5223,7 @@ function renderAvisos(main) {
             <div style="display:inline-block; min-width:50%; border-top:1px solid #1C2B3A; padding-top:4px" class="text-xs">${escHtml(membrete.director || membrete.directores.join(" / ") || "La Dirección")}<br><span style="color:#6C7B8A">Dirección</span></div></div>
         </div>
         <button id="avImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
-      document.getElementById("avImprimirBtn").addEventListener("click", () => window.print());
+      document.getElementById("avImprimirBtn").addEventListener("click", () => imprimirSolo(null));
       doc.scrollIntoView({ behavior: "smooth" });
     });
   }
@@ -5056,15 +5355,15 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
     <p class="text-sm text-center mb-12" style="color:#1C2B3A">A t e n t a m e n t e</p>
     <div class="flex justify-around mt-8 mb-6">${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}${firmaOficio("Sello del plantel", "")}</div>
     </div>`;
-  const estilo = "color:#1C2B3A; text-align:justify; line-height:2.1; font-size:15px";
+  const estilo = "color:#1C2B3A; text-align:justify; line-height:2.4; font-size:16px";
 
   if (tipo === "Carta de buena conducta") {
-    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CARTA DE BUENA CONDUCTA</h3>${dirigido}
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CARTA DE BUENA CONDUCTA</h3>${dirigido}
       <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, hace constar que ${datosAlumno}, ${insc ? `${g.inscrito} en este plantel y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> en el ciclo escolar <strong>${escHtml(ciclo)}</strong>, ` : ""}ha observado durante su permanencia en esta institución una <strong>buena conducta</strong>, mostrando respeto hacia sus compañeros, docentes y personal del plantel, así como cumplimiento de las normas del reglamento escolar.</p>
       ${cierre}`;
   }
   if (tipo === "Constancia de estudios") {
-    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS</h3>${dirigido}
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS</h3>${dirigido}
       <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>${insc.ciclos_escolares.fecha_inicio ? `, comprendido de ${escHtml(mesAnio(insc.ciclos_escolares.fecha_inicio))} a ${escHtml(mesAnio(insc.ciclos_escolares.fecha_fin))}` : ""}.</p>
       ${cierre}`;
   }
@@ -5081,7 +5380,7 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
             <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(f.promedio)}</td></tr>`).join("")}
             <tr style="background:#F4F1EB"><td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${calif.periodos.length + 1}">Promedio general</td><td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(calif.general)}</td></tr></tbody></table>
         <p class="text-xs mb-3" style="color:#6C7B8A">${calif.prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación registrada.</p>`;
-    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS CON CALIFICACIONES</h3>${dirigido}
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS CON CALIFICACIONES</h3>${dirigido}
       <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
       ${tabla}${cierre}`;
   }
@@ -5111,7 +5410,7 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
   if (tipo === "Formato de baja") {
     const fechaBaja = op.fechaBaja ? fechaLarga(op.fechaBaja + "T00:00:00") : "____ de ______________ de ________";
     const t = ctx.tutores[0];
-    return `${cabecera}<h3 class="text-base font-bold text-center mb-4" style="color:#1E3A8A">FORMATO DE BAJA DE ALUMNO</h3>
+    return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">FORMATO DE BAJA DE ALUMNO</h3>
       <div class="text-sm" style="${estilo}">
         <p class="mb-3">Por medio del presente se hace constar la baja de ${datosAlumno}${insc ? `, ${g.inscrito} en <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong>, ciclo escolar <strong>${escHtml(ciclo)}</strong>` : ""}, con fecha <strong>${fechaBaja}</strong>.</p>
         <p class="mb-1"><strong>Motivo de la baja:</strong></p>
@@ -5335,7 +5634,7 @@ function renderOficios(main) {
       let emitiendo = false;
       let yaEmitido = false;
       document.getElementById("ofEmitir").addEventListener("click", async () => {
-        if (yaEmitido) { window.print(); return; }
+        if (yaEmitido) { imprimirSolo(null); return; }
         if (emitiendo) return;
         const op2 = opcionesActuales();
         if (tipo === "Formato de baja" && op2.marcarInactivo && !confirm("Se marcará al alumno como INACTIVO en el sistema. ¿Continuar?")) return;
@@ -5350,7 +5649,7 @@ function renderOficios(main) {
         document.getElementById("ofMsg").innerHTML = okBox(`Documento emitido con folio ${folioOficio(nuevo.numero, nuevo.creado_en)}.`);
         emitiendo = false;
         yaEmitido = true;
-        setTimeout(() => window.print(), 200);
+        setTimeout(() => imprimirSolo(null), 200);
       }, { once: false });
     }
   }
@@ -5381,7 +5680,7 @@ function renderOficios(main) {
         caja.innerHTML = `<div id="ibOficioImprimible" class="ib-imprimible p-6 rounded-xl bg-white border mt-4" style="border-color:#E1DED5; width:100%; max-width:760px">${htmlOficio(o.tipo, ctx, o.opciones || {}, folioOficio(o.numero, o.creado_en), o.creado_en, calif)}</div>
           <p class="text-xs mt-2" style="color:#6C7B8A">Se regenera con los datos actuales del alumno; el folio y la fecha son los de la emisión original.</p>
           <button id="ofReimpBtn" class="w-48 mx-auto block mt-2 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir</button>`;
-        document.getElementById("ofReimpBtn").addEventListener("click", () => window.print());
+        document.getElementById("ofReimpBtn").addEventListener("click", () => imprimirSolo(null));
         caja.scrollIntoView({ behavior: "smooth" });
       } catch (e) { caja.innerHTML = errBox(escHtml(e.message)); }
     }));
