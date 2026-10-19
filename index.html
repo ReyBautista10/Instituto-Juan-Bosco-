@@ -29,6 +29,7 @@
     .ib-imprimible, .ib-imprimible * { visibility: visible; }
     .ib-imprimible { position: absolute; top: 0; left: 0; }
     .ib-imprimible .no-print { display: none !important; }
+    .ib-oculto-impr { display: none !important; }
   }
 </style>
 </head>
@@ -65,7 +66,7 @@ const MENU = [
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: true },
-  { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Secretaria"], construido: true },
+  { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "disciplina", label: "Disciplina", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "avisos", label: "Avisos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "mobiliario", label: "Inventario/Mobiliario", roles: ["Administrador", "Director", "Secretaria"], construido: true },
@@ -1037,7 +1038,7 @@ function renderAlumnos(main) {
       if (esEdicion) {
         const [tutorRes, inscRes] = await Promise.all([
           sb.from("alumno_tutores").select("tutor_id, es_contacto_principal, tutores(*)").eq("alumno_id", alumnoExistente.id).order("es_contacto_principal", { ascending: false }),
-          sb.from("inscripciones").select("*, grupos(letra, grado_id, grados(nivel))").eq("alumno_id", alumnoExistente.id).order("fecha_inscripcion", { ascending: false }).limit(1).maybeSingle(),
+          sb.from("inscripciones").select("*, grupos(letra, grado_id, grados(nombre, nivel))").eq("alumno_id", alumnoExistente.id).order("fecha_inscripcion", { ascending: false }).limit(1).maybeSingle(),
         ]);
         const listaTut = (tutorRes.data || []).map(t => t.tutores).filter(Boolean);
         tutorExistente = listaTut[0] || null;
@@ -2073,6 +2074,22 @@ async function asistenciaDelDia(grupoIds, fechaISO) {
 }
 const horaCorta = d => new Date(d).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
 
+// Ausencias de alumnos (por día): justificada o no. Las captura Dirección, Secretaría o Administración.
+async function cargarAusenciasDia(alumnoIds, fecha) {
+  const m = new Map();
+  for (let i = 0; i < alumnoIds.length; i += 150) {
+    const { data, error } = await sb.from("ausencias_dia").select("alumno_id, justificada, motivo").eq("fecha", fecha).in("alumno_id", alumnoIds.slice(i, i + 150));
+    if (error) throw error;
+    (data || []).forEach(r => m.set(r.alumno_id, r));
+  }
+  return m;
+}
+async function guardarAusenciasDia(filas) {
+  if (!filas.length) return;
+  const { error } = await sb.from("ausencias_dia").upsert(filas.map(f => ({ ...f, registrado_por: state.perfil.id })), { onConflict: "alumno_id,fecha" });
+  if (error) throw error;
+}
+
 // ---------- Pestaña: consultar asistencia por día ----------
 async function renderConsultaAsistencia(cont) {
   cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando grupos…</p>`;
@@ -2105,6 +2122,8 @@ async function renderConsultaAsistencia(cont) {
     try {
       const filas = await asistenciaDelDia([grupoId], fecha);
       const presentes = filas.filter(f => f.entrada).length;
+      let ausMap = new Map();
+      try { ausMap = await cargarAusenciasDia(filas.filter(f => !f.entrada).map(f => f.alumno.id), fecha); } catch (e) { /* tabla aún no creada */ }
       res.innerHTML = filas.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Este grupo no tiene alumnos inscritos.</p>` : `
         <p class="text-xs mb-2" style="color:#6C7B8A">${fechaLarga(fecha + "T00:00:00")} · Presentes: <strong>${presentes}</strong> de ${filas.length} · Ausentes: <strong>${filas.length - presentes}</strong></p>
         <div class="rounded-xl bg-white border overflow-x-auto" style="border-color:#E1DED5">
@@ -2115,10 +2134,17 @@ async function renderConsultaAsistencia(cont) {
                 <td class="p-2">${escHtml(f.nombre)}</td>
                 <td class="p-2">${f.entrada ? horaCorta(f.entrada) : "—"}</td>
                 <td class="p-2">${f.salida ? horaCorta(f.salida) : "—"}</td>
-                <td class="p-2 font-semibold" style="color:${f.entrada ? "#3F7A5E" : "#B5453A"}">${f.entrada ? "Presente" : "Ausente"}</td>
+                <td class="p-2 font-semibold" style="color:${f.entrada ? "#3F7A5E" : "#B5453A"}">${f.entrada ? "Presente" : `Ausente<br><select class="caJust text-xs px-1 py-1 rounded border font-normal" data-id="${f.alumno.id}" style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>`}</td>
               </tr>`).join("")}</tbody>
           </table>
-        </div>`;
+        </div><div id="caJustMsg" class="mt-2"></div>`;
+      res.querySelectorAll(".caJust").forEach(sel => sel.addEventListener("change", async () => {
+        try {
+          const motivo = sel.value === "1" ? (prompt("Motivo de la justificación (opcional):") || null) : null;
+          await guardarAusenciasDia([{ alumno_id: sel.dataset.id, fecha, justificada: sel.value === "1", motivo }]);
+          document.getElementById("caJustMsg").innerHTML = okBox("Guardado.");
+        } catch (e) { document.getElementById("caJustMsg").innerHTML = errBox(escHtml(e.message)); }
+      }));
     } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
   }
 }
@@ -2155,6 +2181,7 @@ async function renderReporteAusencias(cont) {
   limpiarTimersReporte();
   const limite = horaLimiteHoy();
   let forzado = false;
+  let revisado = false;
 
   function pintarEspera() {
     const falta = limite - new Date();
@@ -2182,6 +2209,44 @@ async function renderReporteAusencias(cont) {
       const filas = await asistenciaDelDia(grupos.map(g => g.id), hoy);
       const ahoraTxt = horaCorta(new Date());
 
+      // Paso 1: revisar ausencias (justificada / injustificada) antes de generar los mensajes
+      const ausentesTodos = filas.filter(f => !f.entrada);
+      if (ausentesTodos.length && !revisado) {
+        let ausMap = new Map();
+        try { ausMap = await cargarAusenciasDia(ausentesTodos.map(f => f.alumno.id), hoy); } catch (e) { /* tabla aún no creada */ }
+        cont.innerHTML = `
+          <div class="max-w-2xl">
+            <p class="text-sm font-bold mb-1" style="color:#1E3A8A">Revisa las ausencias de hoy</p>
+            <p class="text-xs mb-3" style="color:#6C7B8A">${fechaLarga(hoy + "T00:00:00")}. Marca si cada ausencia es justificada o no. Las justificadas no afectan la calificación del criterio de asistencia. Las demás cuentan como inasistencia aunque el profesor haya marcado asistencia.</p>
+            ${grupos.map(g => {
+              const aus = ausentesTodos.filter(f => f.grupo_id === g.id);
+              if (!aus.length) return "";
+              return `<div class="p-3 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+                <p class="text-sm font-bold mb-2" style="color:#1E3A8A">${escHtml(g.etiqueta)}</p>
+                ${aus.map(f => `<div class="flex items-center gap-2 py-1.5 flex-wrap" style="border-top:1px solid #F0EDE5">
+                  <span class="flex-1 text-sm min-w-40">${escHtml(f.nombre)}</span>
+                  <select class="rvJust px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>
+                  <input class="rvMotivo px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" placeholder="Motivo (opcional)" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
+                </div>`).join("")}
+              </div>`;
+            }).join("")}
+            <div id="rvMsg"></div>
+            <button id="rvContinuar" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar y generar mensajes</button>
+          </div>`;
+        document.getElementById("rvContinuar").addEventListener("click", async () => {
+          const btn = document.getElementById("rvContinuar");
+          btn.disabled = true;
+          try {
+            const motivos = {};
+            cont.querySelectorAll(".rvMotivo").forEach(i => { motivos[i.dataset.id] = i.value.trim() || null; });
+            await guardarAusenciasDia([...cont.querySelectorAll(".rvJust")].map(sel => ({ alumno_id: sel.dataset.id, fecha: hoy, justificada: sel.value === "1", motivo: sel.value === "1" ? motivos[sel.dataset.id] : null })));
+            revisado = true;
+            generar();
+          } catch (e) { btn.disabled = false; document.getElementById("rvMsg").innerHTML = errBox(escHtml(e.message)); }
+        });
+        return;
+      }
+
       const tarjetas = grupos.map((g, i) => {
         const delGrupo = filas.filter(f => f.grupo_id === g.id);
         if (delGrupo.length === 0) return "";
@@ -2193,7 +2258,8 @@ async function renderReporteAusencias(cont) {
         <div class="max-w-2xl">
           <div class="flex justify-between items-center mb-3 flex-wrap gap-2">
             <p class="text-xs" style="color:#6C7B8A">${fechaLarga(hoy + "T00:00:00")} · generado a las ${ahoraTxt}${forzado && new Date() < limite ? " (vista previa antes de la hora)" : ""}</p>
-            <button id="rpActualizar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Actualizar</button>
+            <span class="flex gap-2"><button id="rpRevisar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Revisar ausencias</button>
+            <button id="rpActualizar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Actualizar</button></span>
           </div>
           ${tarjetas.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">No hay alumnos inscritos en los grupos activos.</p>` : tarjetas.map((t, k) => `
             <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
@@ -2210,6 +2276,7 @@ async function renderReporteAusencias(cont) {
         </div>`;
 
       document.getElementById("rpActualizar").addEventListener("click", generar);
+      document.getElementById("rpRevisar").addEventListener("click", () => { revisado = false; generar(); });
       cont.querySelectorAll(".rpCopiar").forEach(b => b.addEventListener("click", async () => {
         const ok = await copiarTexto(document.getElementById("rpTxt_" + b.dataset.k).value);
         const orig = "Copiar mensaje";
@@ -2905,6 +2972,16 @@ function colConstruirCargos(alumnoId, ciclo, modalidad, tarifas, exenciones) {
   return filas;
 }
 
+// Imprime solo un bloque (oculta temporalmente los demás .ib-imprimible de la pantalla).
+function imprimirSolo(id) {
+  const otros = [...document.querySelectorAll(".ib-imprimible")].filter(e => e.id !== id);
+  otros.forEach(e => e.classList.add("ib-oculto-impr"));
+  const restaurar = () => otros.forEach(e => e.classList.remove("ib-oculto-impr"));
+  window.addEventListener("afterprint", restaurar, { once: true });
+  window.print();
+  setTimeout(restaurar, 1500);
+}
+
 function colALetras(n) {
   const U = ["", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "once", "doce", "trece", "catorce", "quince",
     "dieciséis", "diecisiete", "dieciocho", "diecinueve", "veinte", "veintiuno", "veintidós", "veintitrés", "veinticuatro", "veinticinco", "veintiséis", "veintisiete", "veintiocho", "veintinueve"];
@@ -2951,6 +3028,7 @@ function renderColegiaturas(main) {
   let tabActivo = "cobranza";
   const $ = id => document.getElementById(id);
   const nombreCiclo = c => `${c.nivel} · ${c.nombre}`;
+  let tutorRecibo = null;
   let ciclosCache = null;
   async function ciclos() {
     if (!ciclosCache) {
@@ -3042,11 +3120,13 @@ function renderColegiaturas(main) {
     const insc = lista.find(i => i.ciclo_escolar_id === cicloIdElegido) || lista[0];
     const ciclo = insc.ciclos_escolares;
 
-    const [cargosRes, planRes, exs, tarifas, membrete] = await Promise.all([
+    const [cargosRes, planRes, exs, tarifas, membrete, tutRes] = await Promise.all([
       sb.from("cargos_saldo").select("*").eq("alumno_id", alumno.id).eq("ciclo_escolar_id", ciclo.id).eq("cancelado", false).order("orden").order("fecha_vencimiento"),
       sb.from("planes_pago").select("modalidad").eq("alumno_id", alumno.id).eq("ciclo_escolar_id", ciclo.id).maybeSingle(),
       exencionesDeAlumno(alumno.id), tarifasDeCiclo(ciclo.id), cargarMembrete(ciclo.nivel),
+      sb.from("alumno_tutores").select("es_contacto_principal, tutores(nombre_completo, parentesco)").eq("alumno_id", alumno.id).order("es_contacto_principal", { ascending: false }).limit(1),
     ]);
+    tutorRecibo = tutRes.data?.[0]?.tutores || null;
     if (cargosRes.error) { caja.innerHTML = errBox(escHtml(cargosRes.error.message)); return; }
     const cargos = cargosRes.data || [];
     const modalidad = planRes.data?.modalidad || "Mensual";
@@ -3132,7 +3212,7 @@ function renderColegiaturas(main) {
     });
 
     const imp = $("coImprimirEdo");
-    if (imp) imp.addEventListener("click", () => window.print());
+    if (imp) imp.addEventListener("click", () => imprimirSolo("coEdoImprimible"));
 
     const reex = $("coReexentar");
     if (reex) reex.addEventListener("click", async () => {
@@ -3235,7 +3315,7 @@ function renderColegiaturas(main) {
         </div>
         <div class="text-sm space-y-1" style="line-height:1.6">
           <p><strong>Fecha:</strong> ${fechaLarga(pago.fecha + "T12:00:00")}</p>
-          <p><strong>Recibimos de:</strong> el padre, madre o tutor de <strong>${escHtml(nombreCompletoAlumno(alumno))}</strong>${alumno.matricula ? ` (matrícula ${escHtml(alumno.matricula)})` : ""}</p>
+          <p><strong>Recibimos de:</strong> ${tutorRecibo ? `<strong>${escHtml(tutorRecibo.nombre_completo)}</strong>${tutorRecibo.parentesco ? ` (${escHtml(tutorRecibo.parentesco)})` : ""}, ${tutorRecibo.parentesco ? "" : "padre, madre o tutor, "}por cuenta del alumno(a)` : "el padre, madre o tutor del alumno(a)"} <strong>${escHtml(nombreCompletoAlumno(alumno))}</strong>${alumno.matricula ? ` (matrícula ${escHtml(alumno.matricula)})` : ""}</p>
           <p><strong>Ciclo:</strong> ${escHtml(nombreCiclo(ciclo))}</p>
           <p><strong>Concepto:</strong> ${escHtml(cargo.descripcion)}</p>
           <p><strong>Importe:</strong> ${mxn(pago.monto)} <span class="text-xs" style="color:#6C7B8A">(${colALetras(Number(pago.monto))})</span></p>
@@ -3245,7 +3325,7 @@ function renderColegiaturas(main) {
         <div class="flex justify-around mt-12 text-xs text-center"><div style="width:50%; border-top:1px solid #1C2B3A; padding-top:4px">Recibió<br><span style="color:#6C7B8A">${escHtml(state.perfil.nombre_completo || "")}</span></div></div>
       </div>
       <button id="coReciboPrint" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir recibo</button>`;
-    $("coReciboPrint").addEventListener("click", () => window.print());
+    $("coReciboPrint").addEventListener("click", () => imprimirSolo("coReciboImp"));
     caja.scrollIntoView({ behavior: "smooth" });
   }
 
@@ -3518,6 +3598,38 @@ function renderColegiaturas(main) {
 // ============================================================
 // Módulo Calificaciones y Evaluación
 // ============================================================
+// Calificación del criterio "Asistencia": 10 × asistencias ÷ clases impartidas en el rango.
+// Regla: justificada = no cuenta; sin entrada a la escuela ese día = inasistencia aunque el profesor lo marque presente.
+async function calcularAsistenciaClase(asignacion, alumnos, desde, hasta) {
+  const ids = alumnos.map(a => a.id);
+  const [clases, sesiones] = await Promise.all([
+    colTraerTodo(() => sb.from("asistencia_clase").select("id, alumno_id, fecha").eq("asignacion_id", asignacion.id).gte("fecha", desde).lte("fecha", hasta).order("id")),
+    colTraerTodo(() => sb.from("asistencia_sesiones").select("id, fecha").eq("asignacion_id", asignacion.id).gte("fecha", desde).lte("fecha", hasta).order("id")).catch(() => []),
+  ]);
+  const fechas = new Set([...clases.map(c => c.fecha), ...sesiones.map(s => s.fecha)]);
+  const presentes = new Set(clases.map(c => c.alumno_id + "|" + c.fecha));
+  const puerta = new Map(); // alumno|fecha -> { entro, justificada }
+  const entroAlguien = new Set();
+  for (let i = 0; i < ids.length; i += 100) {
+    const rows = await colTraerTodo(() => sb.rpc("asistencia_dia_alumnos", { p_alumnos: ids.slice(i, i + 100), p_desde: desde, p_hasta: hasta }));
+    rows.forEach(r => { puerta.set(r.alumno_id + "|" + r.fecha, r); if (r.entro) entroAlguien.add(r.fecha); });
+  }
+  const filas = alumnos.map(a => {
+    let asist = 0, faltas = 0, just = 0;
+    fechas.forEach(f => {
+      const p = puerta.get(a.id + "|" + f);
+      const marcado = presentes.has(a.id + "|" + f);
+      if (p?.entro) { marcado ? asist++ : faltas++; }
+      else if (entroAlguien.has(f)) { if (p?.justificada) just++; else faltas++; }
+      else { marcado ? asist++ : faltas++; }
+    });
+    const base = asist + faltas;
+    return { alumno_id: a.id, nombre: `${a.apellido_paterno} ${a.apellido_materno || ""} ${a.nombres}`.replace(/\s+/g, " ").trim(), asistencias: asist, faltas, justificadas: just,
+      calif: base > 0 ? Math.round((10 * asist / base) * 10) / 10 : null };
+  }).sort((x, y) => x.nombre.localeCompare(y.nombre, "es"));
+  return { sesiones: fechas.size, filas };
+}
+
 function renderCalificaciones(main) {
   const esAdmin = state.perfil.rol === "Administrador";
   const esProfesor = state.perfil.rol === "Profesor";
@@ -3697,6 +3809,11 @@ function renderCalificaciones(main) {
             El sistema aplica automáticamente el porcentaje de cada criterio y calcula la calificación final del periodo.
             Ejemplo: si en "Examen" (40%) el alumno sacó 8, aporta 3.2 puntos a la final.
           </div>
+          ${puedeCapturar && criteriosPeriodo.some(c => normalizarTexto(c.nombre).includes("asistencia")) ? `
+          <div class="mb-3">
+            <button id="calAsisBtn" type="button" class="px-3 py-2 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Calcular calificación en el criterio Asistencia</button>
+            <div id="calAsisPanel" class="mt-2"></div>
+          </div>` : ""}
           <table class="text-sm w-full">
             <thead>
               <tr style="color:#6C7B8A">
@@ -3778,6 +3895,49 @@ function renderCalificaciones(main) {
           if (error) { msg.innerHTML = errBox(error.message); return; }
           estadosPeriodo[periodoActivo] = "Confirmado";
           pintar();
+        });
+
+        const btnAsis = document.getElementById("calAsisBtn");
+        if (btnAsis) btnAsis.addEventListener("click", () => {
+          const crit = criteriosPeriodo.find(c => normalizarTexto(c.nombre).includes("asistencia"));
+          const panel = document.getElementById("calAsisPanel");
+          const hoyISO = fechaLocalISO(new Date());
+          const ini = new Date(); ini.setDate(ini.getDate() - 30);
+          panel.innerHTML = `
+            <div class="p-3 rounded-lg" style="background:#F4F1EB">
+              <p class="text-xs mb-2" style="color:#1C2B3A">Elige las fechas que abarca <strong>${escHtml(periodoActivo)}</strong>. La calificación será <strong>10 × asistencias ÷ clases impartidas</strong> en ese rango. Las ausencias justificadas no cuentan; si el alumno no pasó por la entrada de la escuela ese día, cuenta como inasistencia aunque el profesor lo haya marcado presente.</p>
+              <div class="flex gap-2 flex-wrap items-end mb-2">
+                <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="asDesde" type="date" value="${fechaLocalISO(ini)}" class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5" /></div>
+                <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="asHasta" type="date" value="${hoyISO}" class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5" /></div>
+                <button id="asCalcular" type="button" class="px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#1E3A8A; color:#fff">Calcular</button>
+              </div>
+              <div id="asResultado"></div>
+            </div>`;
+          document.getElementById("asCalcular").addEventListener("click", async () => {
+            const res = document.getElementById("asResultado");
+            const desde = document.getElementById("asDesde").value, hasta = document.getElementById("asHasta").value;
+            if (!desde || !hasta || desde > hasta) { res.innerHTML = errBox("Revisa las fechas."); return; }
+            res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Calculando…</p>`;
+            try {
+              const r = await calcularAsistenciaClase(asignacion, alumnos, desde, hasta);
+              if (r.sesiones === 0) { res.innerHTML = errBox("No hay clases con asistencia guardada en ese rango."); return; }
+              res.innerHTML = `
+                <p class="text-xs mb-1" style="color:#6C7B8A">Clases impartidas en el rango: <strong>${r.sesiones}</strong></p>
+                <div style="overflow-x:auto"><table class="w-full text-xs"><thead><tr style="color:#6C7B8A; text-align:left"><th>Alumno</th><th>Asist.</th><th>Faltas</th><th>Justif.</th><th>Calif.</th></tr></thead><tbody>
+                ${r.filas.map(f => `<tr style="border-top:1px solid #E1DED5"><td>${escHtml(f.nombre)}</td><td>${f.asistencias}</td><td>${f.faltas}</td><td>${f.justificadas}</td><td><strong>${f.calif == null ? "—" : f.calif.toFixed(1)}</strong></td></tr>`).join("")}
+                </tbody></table></div>
+                <div id="asMsg" class="mt-2"></div>
+                <button id="asAplicar" type="button" class="mt-1 px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Aplicar calificaciones al criterio "${escHtml(crit.nombre)}"</button>`;
+              document.getElementById("asAplicar").addEventListener("click", async () => {
+                const filas = r.filas.filter(f => f.calif != null).map(f => ({ criterio_id: crit.id, alumno_id: f.alumno_id, valor: f.calif }));
+                const { error } = await sb.from("calificaciones").upsert(filas, { onConflict: "criterio_id,alumno_id" });
+                if (error) { document.getElementById("asMsg").innerHTML = errBox(escHtml(error.message)); return; }
+                filas.forEach(f => { valoresCache[f.alumno_id] = valoresCache[f.alumno_id] || {}; valoresCache[f.alumno_id][crit.id] = f.valor; });
+                pintar();
+                document.getElementById("calGuardarMsg") && (document.getElementById("calGuardarMsg").innerHTML = okBox("Calificación de asistencia calculada y guardada."));
+              });
+            } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
+          });
         });
 
         const btnGuardar = document.getElementById("calGuardarBtn");
@@ -5278,6 +5438,10 @@ function renderAsistencia(main) {
       const nuevos = [...marcados].filter(id => !yaPresentes.has(id));
       const quitados = [...yaPresentes].filter(id => !marcados.has(id));
       try {
+        { // deja constancia de que la clase se impartió ese día (aunque nadie haya asistido)
+          const { error: eS } = await sb.from("asistencia_sesiones").upsert({ asignacion_id: clase.id, fecha: hoy }, { onConflict: "asignacion_id,fecha", ignoreDuplicates: true });
+          if (eS && eS.code !== "42P01") throw eS;
+        }
         if (nuevos.length) {
           const { error } = await sb.from("asistencia_clase").insert(
             nuevos.map(id => ({ asignacion_id: clase.id, alumno_id: id, fecha: hoy, registrado_por: state.perfil.id }))
