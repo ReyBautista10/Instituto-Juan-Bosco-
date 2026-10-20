@@ -350,7 +350,7 @@ async function iniciarSesion() {
 
 async function cerrarSesion() {
   await sb.auth.signOut();
-  state.perfil = null;
+  state.perfil = null; state.calInfo = null;
   detenerMonitorInactividad();
   renderLogin();
 }
@@ -360,7 +360,8 @@ async function cerrarSesion() {
 // ============================================================
 function renderApp() {
   iniciarMonitorInactividad();
-  const menuVisible = MENU.filter(m => m.roles.includes(state.perfil.rol));
+  const ci = state.calInfo;
+  const menuVisible = MENU.filter(m => m.roles.includes(state.perfil.rol) && (m.id !== "calificaciones" || state.perfil.rol === "Profesor" || (ci && (ci.propias > 0 || ci.pend > 0))));
 
   app.innerHTML = `
     <div class="min-h-screen">
@@ -379,11 +380,14 @@ function renderApp() {
       </div>
 
       <div class="flex flex-wrap gap-1 px-4 py-2" style="background:#fff; border-bottom:1px solid #E1DED5">
-        ${menuVisible.map(m => `
+        ${menuVisible.map(m => {
+          const aviso = m.id === "calificaciones" && ci && ci.pend > 0;
+          const activo = state.seccion === m.id;
+          return `
           <button class="menuBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-id="${m.id}"
-            style="background:${state.seccion === m.id ? "#1E3A8A" : "transparent"}; color:${state.seccion === m.id ? "#F4F1EB" : "#1E3A8A"}">
-            ${m.label}
-          </button>`).join("")}
+            style="background:${activo ? "#1E3A8A" : aviso ? "#FFE8A3" : "transparent"}; color:${activo ? "#F4F1EB" : aviso ? "#7A4B00" : "#1E3A8A"}; ${aviso && !activo ? "border:1px solid #E8B923;" : ""}">
+            ${m.label}${aviso ? ` <span class="ml-1 px-1.5 rounded-full text-xs font-bold" style="background:#B5453A; color:#fff">${ci.pend}</span>` : ""}
+          </button>`; }).join("")}
       </div>
 
       <div id="main" class="p-5"></div>
@@ -397,6 +401,27 @@ function renderApp() {
   }));
 
   renderSeccion();
+  cargarCalInfo();
+}
+
+// Cuántas clases tiene asignadas la persona en sesión y cuántas solicitudes de modificación hay pendientes.
+async function cargarCalInfo() {
+  if (!state.perfil || state.calInfoCargando) return;
+  state.calInfoCargando = true;
+  try {
+    const rol = state.perfil.rol;
+    const r1 = await sb.from("profesor_materias_grupos").select("id", { count: "exact", head: true }).eq("profesor_id", state.perfil.id);
+    let pend = 0;
+    if (rol !== "Profesor") {
+      const r2 = await sb.from("solicitudes_criterios").select("id", { count: "exact", head: true }).eq("estado", "Pendiente");
+      pend = r2.count || 0;
+    }
+    const nuevo = { propias: r1.count || 0, pend };
+    const ant = state.calInfo;
+    state.calInfo = nuevo;
+    if (!ant || ant.propias !== nuevo.propias || ant.pend !== nuevo.pend) { state.calInfoCargando = false; renderApp(); return; }
+  } catch (e) { if (!state.calInfo) state.calInfo = { propias: 0, pend: 0 }; }
+  state.calInfoCargando = false;
 }
 
 function abrirModalCambiarPassword() {
@@ -498,6 +523,7 @@ function renderMobiliario(main) {
       <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="categorias">Categorías</button>
       <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="articulos">Artículos</button>
       <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="revisar">Revisar inventario</button>
+      <button class="mobTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="hoja">Hoja de etiquetas</button>
     </div>
     <div id="mobContenido"></div>`;
 
@@ -522,6 +548,128 @@ function renderMobiliario(main) {
     if (tabActivo === "categorias") return renderCategorias(cont);
     if (tabActivo === "articulos") return renderArticulos(cont);
     if (tabActivo === "revisar") return renderRevisarInventario(cont);
+    if (tabActivo === "hoja") return renderHojaEtiquetas(cont);
+  }
+
+  // ---------- Hoja carta con etiquetas ya distribuidas ----------
+  async function renderHojaEtiquetas(cont) {
+    const $ = id => document.getElementById(id);
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando inventario…</p>`;
+    const cr = await sb.from("categorias_mobiliario").select("id, nombre, prefijo").order("nombre");
+    if (cr.error) { cont.innerHTML = errBox(cr.error.message); return; }
+    const cats = cr.data || [];
+    const catNombre = new Map(cats.map(c => [c.id, c.nombre]));
+    const items = [];
+    for (let desde = 0; ; desde += 1000) {
+      const r = await sb.from("mobiliario").select("id, id_etiqueta, categoria_id, estado, activo").order("id_etiqueta").range(desde, desde + 999);
+      if (r.error) { cont.innerHTML = errBox(r.error.message); return; }
+      items.push(...(r.data || []));
+      if (!r.data || r.data.length < 1000) break;
+    }
+    const numDe = id => { const m = /(\d+)\s*$/.exec(id || ""); return m ? parseInt(m[1], 10) : null; };
+    let seleccion = [];
+    const urls = [];
+
+    cont.innerHTML = `
+      <div class="max-w-2xl">
+        <p class="text-xs mb-3" style="color:#6C7B8A">Genera hojas tamaño carta (imagen PNG) con las etiquetas de 5 × 3 cm ya acomodadas: 3 columnas × 8 filas = 24 etiquetas por hoja. Imprímelas al 100% (tamaño real) en papel adherible.</p>
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div><label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Categoría</label>
+              <select id="hjCat" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todas</option>${cats.map(c => `<option value="${c.id}">${escHtml(c.nombre)} (${escHtml(c.prefijo)})</option>`).join("")}</select></div>
+            <div><label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Estado</label>
+              <select id="hjEst" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos</option>${ESTADOS_MOBILIARIO.map(e => `<option value="${e}">${e}</option>`).join("")}</select></div>
+          </div>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Rango de folios (número del ID; ej. del 1 al 40)</label>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <input id="hjDesde" type="number" min="0" placeholder="Desde" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" />
+            <input id="hjHasta" type="number" min="0" placeholder="Hasta" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" />
+          </div>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Folios específicos (opcional; separados por coma, espacio o renglón). Si los escribes, se usan solo estos.</label>
+          <textarea id="hjFolios" rows="2" placeholder="BUT-001, BUT-007, MES-003" class="w-full px-2 py-1.5 rounded-lg text-sm border mb-2" style="border-color:#E1DED5"></textarea>
+          <label class="flex items-center gap-2 text-xs mb-3" style="color:#1C2B3A"><input type="checkbox" id="hjBaja" /> Incluir artículos dados de baja</label>
+          <button id="hjBuscar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Buscar artículos</button>
+        </div>
+        <div id="hjLista"></div>
+        <div id="hjSalida" class="mt-3"></div>
+      </div>`;
+
+    $("hjBuscar").addEventListener("click", () => {
+      const cat = $("hjCat").value, est = $("hjEst").value, baja = $("hjBaja").checked;
+      const d = $("hjDesde").value === "" ? null : parseInt($("hjDesde").value, 10);
+      const h = $("hjHasta").value === "" ? null : parseInt($("hjHasta").value, 10);
+      const esp = $("hjFolios").value.split(/[\s,;]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
+      let lista, faltan = [];
+      if (esp.length) {
+        const mapa = new Map(items.map(i => [String(i.id_etiqueta).toUpperCase(), i]));
+        lista = []; esp.forEach(f => { const it = mapa.get(f); if (it) lista.push(it); else faltan.push(f); });
+      } else {
+        lista = items.filter(i => (baja || i.activo !== false) && (!cat || i.categoria_id === cat) && (!est || i.estado === est));
+        if (d !== null || h !== null) lista = lista.filter(i => { const n = numDe(i.id_etiqueta); return n !== null && (d === null || n >= d) && (h === null || n <= h); });
+      }
+      seleccion = lista.map(i => ({ ...i, marcado: true, categoria_nombre: catNombre.get(i.categoria_id) || "" }));
+      pintarLista(faltan);
+    });
+
+    function pintarLista(faltan) {
+      const caja = $("hjLista");
+      $("hjSalida").innerHTML = "";
+      if (seleccion.length === 0) { caja.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay artículos con esos criterios.${faltan && faltan.length ? " No se encontraron: " + escHtml(faltan.join(", ")) : ""}</p>`; return; }
+      caja.innerHTML = `
+        ${faltan && faltan.length ? `<p class="text-xs mb-2" style="color:#B5453A">No se encontraron: ${escHtml(faltan.join(", "))}</p>` : ""}
+        <div class="p-3 rounded-xl bg-white border" style="border-color:#E1DED5">
+          <div class="flex items-center justify-between mb-2">
+            <p class="text-sm font-semibold" style="color:#1E3A8A"><span id="hjCuenta"></span></p>
+            <button id="hjTodos" class="px-2 py-1 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Marcar / desmarcar todos</button>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-1" style="max-height:240px; overflow-y:auto">
+            ${seleccion.map((i, k) => `<label class="flex items-center gap-1 text-xs" style="color:#1C2B3A"><input type="checkbox" class="hjCk" data-k="${k}" checked /> ${escHtml(i.id_etiqueta)}${i.activo === false ? " (baja)" : ""}</label>`).join("")}
+          </div>
+          <button id="hjGenerar" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Generar hoja(s) carta</button>
+        </div>`;
+      const act = () => { const n = seleccion.filter(i => i.marcado).length; $("hjCuenta").textContent = `${n} etiqueta(s) · ${Math.ceil(n / 24) || 0} hoja(s)`; };
+      caja.querySelectorAll(".hjCk").forEach(ck => ck.addEventListener("change", () => { seleccion[ck.dataset.k].marcado = ck.checked; act(); }));
+      $("hjTodos").addEventListener("click", () => { const todos = seleccion.every(i => i.marcado); seleccion.forEach(i => i.marcado = !todos); caja.querySelectorAll(".hjCk").forEach(ck => ck.checked = !todos); act(); });
+      $("hjGenerar").addEventListener("click", generar);
+      act();
+    }
+
+    async function generar() {
+      const marcados = seleccion.filter(i => i.marcado);
+      const salida = $("hjSalida");
+      if (marcados.length === 0) { salida.innerHTML = errBox("Marca al menos una etiqueta."); return; }
+      urls.forEach(u => URL.revokeObjectURL(u.url)); urls.length = 0;
+      const btn = $("hjGenerar"); btn.disabled = true;
+      salida.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Generando… <span id="hjProg">0</span> / ${marcados.length}</p>`;
+      try {
+        // Hoja carta a 300 dpi: 2550 × 3300 px. Etiqueta 5 × 3 cm = 591 × 354 px; 3 columnas × 8 filas.
+        const W = 2550, H = 3300, lw = 591, lh = 354, gap = 35, cols = 3, filas = 8, porHoja = cols * filas;
+        const x0 = Math.round((W - (cols * lw + (cols - 1) * gap)) / 2), y0 = Math.round((H - (filas * lh + (filas - 1) * gap)) / 2);
+        const hojas = [];
+        for (let h = 0; h < marcados.length; h += porHoja) {
+          const hoja = document.createElement("canvas"); hoja.width = W; hoja.height = H;
+          const g = hoja.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+          g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+          const grupo = marcados.slice(h, h + porHoja);
+          for (let k = 0; k < grupo.length; k++) {
+            const c = await dibujarEtiquetaCanvas(grupo[k]);
+            g.drawImage(c, x0 + (k % cols) * (lw + gap), y0 + Math.floor(k / cols) * (lh + gap), lw, lh);
+            const pg = $("hjProg"); if (pg) pg.textContent = String(h + k + 1);
+          }
+          const blob = await pngConDpi(await new Promise(res => hoja.toBlob(res, "image/png")), 300);
+          hojas.push({ blob, desde: grupo[0].id_etiqueta, hasta: grupo[grupo.length - 1].id_etiqueta, n: grupo.length });
+        }
+        salida.innerHTML = `<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${hojas.map((hj, i) => {
+          const url = URL.createObjectURL(hj.blob); const nombre = `Etiquetas_hoja_${i + 1}.png`; urls.push({ url, nombre });
+          return `<div class="p-2 rounded-xl bg-white border" style="border-color:#E1DED5"><img src="${url}" alt="Hoja ${i + 1}" style="width:100%; border:1px solid #E1DED5" />
+            <p class="text-xs my-1" style="color:#6C7B8A">Hoja ${i + 1}: ${hj.n} etiqueta(s) (${escHtml(hj.desde)} … ${escHtml(hj.hasta)})</p>
+            <a href="${url}" download="${nombre}" class="inline-block px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#1E3A8A; color:#fff">Descargar ${nombre}</a></div>`; }).join("")}</div>
+          ${hojas.length > 1 ? `<button id="hjDescTodas" class="mt-3 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#F4F1EB; color:#1E3A8A">Descargar todas las hojas</button>` : ""}`;
+        const dt = $("hjDescTodas");
+        if (dt) dt.addEventListener("click", async () => { dt.disabled = true; for (const u of urls) { descargarUrl(u.url, u.nombre); await esperar(500); } dt.disabled = false; });
+      } catch (e) { salida.innerHTML = errBox(escHtml(e.message)); }
+      btn.disabled = false;
+    }
   }
 
   // ---------- Categorías ----------
@@ -980,6 +1128,11 @@ async function pngConDpi(blob, dpi) {
 }
 // Etiqueta de 5 cm × 3 cm a 600 dpi (1181 × 709 px): QR a la izquierda; categoría e ID a la derecha.
 async function generarEtiquetaPNG(item) {
+  const canvas = await dibujarEtiquetaCanvas(item);
+  const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+  return pngConDpi(blob, 600);
+}
+async function dibujarEtiquetaCanvas(item) {
   await cargarLibQR(QR_GEN_LIBS, () => window.QRCode && typeof window.QRCode.toCanvas === "function", "el generador de QR");
   const W = 1181, H = 709;
   const canvas = document.createElement("canvas");
@@ -999,8 +1152,7 @@ async function generarEtiquetaPNG(item) {
   ctx.fillStyle = "#1E3A8A";
   ajustar(item.id_etiqueta, "bold", 150, 40); ctx.fillText(item.id_etiqueta, x, 450);
   ctx.fillStyle = "#6C7B8A"; ctx.font = "normal 34px Arial, Helvetica, sans-serif"; ctx.fillText("Inventario", x, 560);
-  const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
-  return pngConDpi(blob, 600);
+  return canvas;
 }
 function descargarUrl(url, nombre) {
   const a = document.createElement("a");
@@ -2644,8 +2796,8 @@ async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
             <span>☐ SÍ AUTORIZO</span><span>☐ NO AUTORIZO</span>
           </div>
         </div>
-        <p class="text-xs text-right mt-2">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${hoy}.</p>
-        <div class="ib-pie flex justify-between mt-12 text-xs text-center">
+        ${cierreFecha(new Date())}
+        <div class="ib-pie flex justify-between mt-16 text-xs text-center">
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del padre, madre o tutor<br><span style="color:#6C7B8A">${escHtml(datos.tutorNombre)}</span></div>
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Recibe por el plantel<br><span style="color:#6C7B8A">${escHtml(membrete.director || "Nombre y firma")}</span></div>
         </div>
@@ -2655,8 +2807,8 @@ async function mostrarConsentimientoFacial(destino, datos, alCerrar) {
         <h3 class="text-sm font-bold text-center mb-3" style="color:#1E3A8A">REGLAMENTO ESCOLAR</h3>
         ${reglamentoHtml(reg.contenido)}
         <p class="text-sm mt-4" style="text-align:justify">Yo, <strong>${escHtml(datos.tutorNombre)}</strong>${datos.tutorParentesco ? `, ${escHtml(datos.tutorParentesco)}` : ""} del alumno(a) <strong>${escHtml(nombreAl)}</strong>, manifiesto que recibí, leí y estoy de enterado(a) del presente Reglamento Escolar, y me comprometo a cumplirlo y a hacerlo cumplir.</p>
-        <p class="text-xs text-right mt-2">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${hoy}.</p>
-        <div class="ib-pie flex justify-between mt-12 text-xs text-center">
+        ${cierreFecha(new Date())}
+        <div class="ib-pie flex justify-between mt-16 text-xs text-center">
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del padre, madre o tutor<br><span style="color:#6C7B8A">${escHtml(datos.tutorNombre)}</span></div>
           <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del alumno(a)<br><span style="color:#6C7B8A">${escHtml(nombreAl)}</span></div>
         </div>
@@ -3118,8 +3270,8 @@ async function renderAvisoPrivacidad(main) {
             <p><strong>Cambios al aviso.</strong> Cualquier modificación será comunicada a través de los medios de contacto registrados.</p>
             <p><strong>Consentimiento.</strong> Yo, <strong>${docente ? escHtml(docente.nombre_completo) : "______________________________________"}</strong>, declaro haber leído y comprendido el presente aviso de privacidad y otorgo mi consentimiento para el tratamiento de mis datos personales conforme a él.</p>
             <div class="flex gap-8 justify-center my-2 text-sm font-semibold"><span>☐ SÍ AUTORIZO el reconocimiento facial</span><span>☐ NO AUTORIZO</span></div>
-            <p class="text-right mt-4">${val("ciudad", "ciudad pendiente")}, a ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
-            <div class="ib-pie flex justify-between mt-12 text-xs text-center">
+            ${cierreFecha(new Date())}
+            <div class="ib-pie flex justify-between mt-16 text-xs text-center">
               <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Nombre y firma del docente${docente ? `<br><span style="color:#6C7B8A">${escHtml(docente.nombre_completo)}</span>` : ""}</div>
               <div style="width:44%; border-top:1px solid #1C2B3A; padding-top:4px">Recibe por el Instituto<br><span style="color:#6C7B8A">${escHtml([datos.director_secundaria || datos.director_nombre, datos.director_preparatoria].filter(Boolean).join(" / ") || "Nombre y firma")}</span></div>
             </div>
@@ -3143,7 +3295,7 @@ async function renderAvisoPrivacidad(main) {
 
             <p><strong>Consentimiento.</strong> Al momento de realizar el trámite de inscripción, el padre, madre o tutor legal manifiesta haber leído y aceptado el contenido del presente aviso de privacidad.</p>
 
-            <p class="text-right mt-4">${val("ciudad", "ciudad pendiente")}, a ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
+            ${cierreFecha(new Date())}
           </div>`}
         </div>
 
@@ -3417,7 +3569,7 @@ function renderColegiaturas(main) {
 
     const estado = c => {
       if (Number(c.monto) === 0) return ["Exento", "#3F7A5E"];
-      if (Number(c.saldo) <= 0.004) return [Number(c.condonado) > 0 ? "Condonado" : "Pagado", "#3F7A5E"];
+      if (Number(c.saldo) <= 0.004) return [Number(c.condonado) > 0 ? "Condonado" : (c.recargo_condonado ? "Pagado (recargo condonado)" : "Pagado"), "#3F7A5E"];
       if (c.fecha_vencimiento < hoy) return [Number(c.pagado) > 0 ? "Parcial vencido" : "Vencido", "#B5453A"];
       return [Number(c.pagado) > 0 ? "Parcial" : "Pendiente", "#B7791F"];
     };
@@ -3497,7 +3649,7 @@ function renderColegiaturas(main) {
       $("coForm").innerHTML = `
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
           <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Condonar: ${escHtml(c.descripcion)}</p>
-          <label class="flex items-start gap-2 text-sm mb-1" style="${hayRecargo ? "" : "opacity:.5"}"><input type="radio" name="cdAlc" value="recargo" ${hayRecargo ? "checked" : "disabled"} class="mt-1" /> <span>Solo el <strong>recargo por atraso</strong> (${mxn(c.recargo)})${hayRecargo ? "" : " — este cargo no tiene recargo"}</span></label>
+          <label class="flex items-start gap-2 text-sm mb-1" style="${hayRecargo ? "" : "opacity:.5"}"><input type="radio" name="cdAlc" value="recargo" ${hayRecargo ? "checked" : "disabled"} class="mt-1" /> <span>Solo el <strong>recargo por atraso</strong> (${mxn(c.recargo)})${hayRecargo ? ` — el concepto sigue activo con saldo de <strong>${mxn(Math.max(0, Number(c.saldo) - Number(c.recargo)))}</strong>, ya sin recargo` : " — este cargo no tiene recargo"}</span></label>
           <label class="flex items-start gap-2 text-sm mb-2"><input type="radio" name="cdAlc" value="total" ${hayRecargo ? "" : "checked"} class="mt-1" /> <span>Todo el saldo de este concepto (<strong>${mxn(c.saldo)}</strong>)</span></label>
           <input id="cdMotivo" placeholder="Motivo (obligatorio)" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
           <div id="cdMsg"></div>
@@ -3512,7 +3664,7 @@ function renderColegiaturas(main) {
         const motivo = $("cdMotivo").value.trim();
         if (!motivo) { $("cdMsg").innerHTML = errBox("Escribe el motivo de la condonación."); return; }
         const alc = document.querySelector('input[name="cdAlc"]:checked').value;
-        if (!confirm(alc === "total" ? `¿Condonar TODO el saldo (${mxn(c.saldo)}) de "${c.descripcion}"?` : `¿Condonar el recargo (${mxn(c.recargo)}) de "${c.descripcion}"?`)) return;
+        if (!confirm(alc === "total" ? `¿Condonar TODO el saldo (${mxn(c.saldo)}) de "${c.descripcion}"?` : `¿Condonar solo el recargo (${mxn(c.recargo)}) de "${c.descripcion}"? El concepto seguirá con saldo de ${mxn(Math.max(0, Number(c.saldo) - Number(c.recargo)))}.`)) return;
         $("cdOk").disabled = true;
         const { error: e } = await sb.rpc("condonar_cargo", { p_cargo: c.id, p_alcance: alc, p_motivo: motivo });
         if (e) { $("cdOk").disabled = false; $("cdMsg").innerHTML = errBox(escHtml(e.message)); return; }
@@ -3866,10 +4018,11 @@ function renderColegiaturas(main) {
 
   // ======================= EXENCIONES Y BECAS =======================
   async function tabExenciones(cont) {
+    const puedeExenciones = ["Administrador", "Director"].includes(state.perfil.rol);
     const cs = await ciclos();
     cont.innerHTML = `
-      <p class="text-xs mb-3" style="color:#6C7B8A">Una exención omite total o parcialmente los cobros de un alumno (por ejemplo, hijo(a) del propietario: 100% en todos los cobros). Los cargos del alumno se generan ya con el descuento y quedan visibles como "Exento". ${esAdmin ? "Las exenciones las registra únicamente el Administrador." : "Solo el Administrador puede registrarlas."}</p>
-      ${esAdmin ? `<div id="exSel"></div>
+      <p class="text-xs mb-3" style="color:#6C7B8A">Una exención omite total o parcialmente los cobros de un alumno (por ejemplo, hijo(a) del propietario: 100% en todos los cobros). Los cargos del alumno se generan ya con el descuento y quedan visibles como "Exento". ${puedeExenciones ? "Las exenciones las registran el Administrador o el Director." : "Solo el Administrador o el Director pueden registrarlas."}</p>
+      ${puedeExenciones ? `<div id="exSel"></div>
       <div id="exForm" class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5; display:none">
         <p id="exAl" class="text-sm font-semibold mb-2" style="color:#1E3A8A"></p>
         <div class="grid grid-cols-2 gap-2 mb-2">
@@ -3883,7 +4036,7 @@ function renderColegiaturas(main) {
       </div>` : ""}
       <div id="exLista"></div>`;
     let alumnoSel = null;
-    if (esAdmin) {
+    if (puedeExenciones) {
       selectorAlumno($("exSel"), a => { alumnoSel = a; $("exForm").style.display = ""; $("exAl").textContent = "Exención para: " + nombreCompletoAlumno(a); });
       $("exGuardar").addEventListener("click", async () => {
         const motivo = $("exMotivo").value.trim(), pct = Number($("exPct").value);
@@ -3908,7 +4061,7 @@ function renderColegiaturas(main) {
         <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Exenciones vigentes</p>
         ${lista.map(e => `<div class="flex items-center justify-between gap-2 text-xs py-1.5" style="border-top:1px solid #F0EDE6">
           <span><strong>${escHtml(e.alumnos ? nombreCompletoAlumno(e.alumnos) : "")}</strong> · ${Number(e.porcentaje)}% · ${escHtml(e.concepto || "todos los cobros")} · ${e.ciclo_escolar_id ? escHtml(nombreCiclo(cs.find(c => c.id === e.ciclo_escolar_id) || { nivel: "", nombre: "ciclo" })) : "todos los ciclos"} · ${escHtml(e.motivo)}</span>
-          ${esAdmin ? `<button class="exQuitar px-2 py-1 rounded-lg text-xs" data-id="${e.id}" style="background:#FBEAE8; color:#B5453A">Quitar</button>` : ""}</div>`).join("")}
+          ${puedeExenciones ? `<button class="exQuitar px-2 py-1 rounded-lg text-xs" data-id="${e.id}" style="background:#FBEAE8; color:#B5453A">Quitar</button>` : ""}</div>`).join("")}
       </div>`;
     $("exLista").querySelectorAll(".exQuitar").forEach(b => b.addEventListener("click", async () => {
       if (!confirm("¿Quitar esta exención? Los cargos ya generados conservan su descuento hasta que los recalcules en Cobranza.")) return;
@@ -3958,28 +4111,35 @@ async function calcularAsistenciaClase(asignacion, alumnos, desde, hasta) {
 }
 
 function renderCalificaciones(main) {
-  const esAdmin = state.perfil.rol === "Administrador";
+  const puedeExenciones = state.perfil.rol === "Administrador";
   const esProfesor = state.perfil.rol === "Profesor";
 
   main.innerHTML = `
     <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Calificaciones y Evaluación</h2>
     <div class="max-w-3xl">
       <div id="calSolicitudes"></div>
-      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Selecciona clase</label>
-      <select id="calAsigSel" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5">
-        <option value="">Cargando…</option>
-      </select>
+      <div id="calSelWrap">
+        <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Selecciona clase</label>
+        <select id="calAsigSel" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5">
+          <option value="">Cargando…</option>
+        </select>
+      </div>
       <div id="calContenido"></div>
     </div>`;
 
-  cargarAsignaciones();
-  if (["Administrador", "Director", "Secretaria"].includes(state.perfil.rol)) cargarSolicitudes();
+  let nClases = 0, nSolic = 0;
+  const puedeResolver = ["Administrador", "Director", "Secretaria"].includes(state.perfil.rol);
+  (async () => {
+    await Promise.all([cargarAsignaciones(), puedeResolver ? cargarSolicitudes() : Promise.resolve()]);
+    if (!esProfesor && nClases === 0 && nSolic === 0) document.getElementById("calContenido").innerHTML = `<p class="text-sm" style="color:#6C7B8A">No tienes materias asignadas y no hay solicitudes de modificación pendientes.</p>`;
+  })();
 
   async function cargarSolicitudes() {
     const caja = document.getElementById("calSolicitudes");
     const { data, error } = await sb.from("solicitudes_criterios")
       .select("id, asignacion_id, periodo, motivo, creado_en, solicitado_por, profesor_materias_grupos(materias(nombre), grupos(letra, grados(nombre)))")
       .eq("estado", "Pendiente").order("creado_en");
+    nSolic = data ? data.length : 0;
     if (error || !data || data.length === 0) { caja.innerHTML = ""; return; }
     const { data: perfs } = await sb.rpc("personal_para_acceso");
     const nombres = new Map((perfs || []).map(p => [p.id, p.nombre_completo]));
@@ -4011,25 +4171,34 @@ function renderCalificaciones(main) {
           .eq("asignacion_id", s.asignacion_id).eq("periodo", s.periodo);
         if (e2) { document.getElementById("solMsg").innerHTML = errBox(escHtml(e2.message)); return; }
       }
-      cargarSolicitudes();
+      state.calInfo = state.calInfo || { propias: 0, pend: 0 };
+      await cargarSolicitudes();
+      if (!nSolic) { cargarCalInfo(); }
     }));
   }
 
   async function cargarAsignaciones() {
-    let query = sb.from("profesor_materias_grupos").select("id, profesor_id, grupo_id, ciclo_escolar_id, materias(nombre), grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre), perfiles(nombre_completo)");
-    if (esProfesor) query = query.eq("profesor_id", state.perfil.id);
-    const { data, error } = await query;
+    // Solo las clases a nombre de la persona que tiene la sesión activa.
+    const { data, error } = await sb.from("profesor_materias_grupos").select("id, profesor_id, grupo_id, ciclo_escolar_id, materias(nombre), grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre)").eq("profesor_id", state.perfil.id);
     const sel = document.getElementById("calAsigSel");
     if (error) { sel.innerHTML = `<option>Error al cargar</option>`; return; }
     // Filtramos cualquier fila con datos incompletos (ej. por permisos faltantes
     // en alguna tabla relacionada), para no tronar al construir la lista.
     const asignaciones = (data || []).filter(a => a.materias && a.grupos && a.grupos.grados && a.ciclos_escolares);
+    nClases = asignaciones.length;
     if (asignaciones.length === 0) {
-      sel.innerHTML = `<option value="">Sin clases asignadas</option>`;
+      if (esProfesor) sel.innerHTML = `<option value="">Sin clases asignadas</option>`;
+      else document.getElementById("calSelWrap").innerHTML = "";
       return;
     }
+    // Etiqueta: "Materia — Nivel". Solo si se repite se agrega grado/grupo (y ciclo) para distinguirlas.
+    const base = a => `${a.materias.nombre} — ${a.grupos.grados.nivel}`;
+    const cuentaBase = {}; asignaciones.forEach(a => { cuentaBase[base(a)] = (cuentaBase[base(a)] || 0) + 1; });
+    const conGrupo = a => `${base(a)} · ${a.grupos.grados.nombre} "${a.grupos.letra}"`;
+    const cuentaGrupo = {}; asignaciones.forEach(a => { cuentaGrupo[conGrupo(a)] = (cuentaGrupo[conGrupo(a)] || 0) + 1; });
+    const etiqueta = a => cuentaBase[base(a)] === 1 ? base(a) : cuentaGrupo[conGrupo(a)] === 1 ? conGrupo(a) : `${conGrupo(a)} · ${a.ciclos_escolares.nombre}`;
     sel.innerHTML = `<option value="">Selecciona…</option>` + asignaciones.map(a => `
-      <option value="${a.id}">${a.materias.nombre} — ${a.grupos.grados.nombre} "${a.grupos.letra}" (${a.grupos.grados.nivel}) — ${a.ciclos_escolares.nombre}${!esProfesor ? " — " + (a.perfiles?.nombre_completo || "") : ""}</option>
+      <option value="${a.id}">${escHtml(etiqueta(a))}</option>
     `).join("");
     sel.addEventListener("change", () => {
       const asignacion = asignaciones.find(a => a.id === sel.value);
@@ -5001,7 +5170,7 @@ function renderDisciplina(main) {
       return `${membreteHtml(membrete)}
         <h3 class="text-sm font-bold text-center mb-1" style="color:#1E3A8A">CITATORIO</h3>
         <p class="text-xs text-center mb-4" style="color:#6C7B8A">Folio ${folio}</p>
-        <p class="text-xs text-right mb-4" style="color:#1C2B3A">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${fechaLarga(r.citatorio_emitido_en)}.</p>
+        ${cierreFecha(r.citatorio_emitido_en, "0.5cm")}
         <p class="text-sm mb-3" style="color:#1C2B3A"><strong>C. ${escHtml(tutor?.nombre_completo || "Padre, madre o tutor")}</strong><br>${tutor?.parentesco ? escHtml(tutor.parentesco) + " del alumno(a) " : "Padre, madre o tutor del alumno(a) "}${escHtml(nombreAl)}${grupoTxt ? ", de " + escHtml(grupoTxt) : ""}.<br>P r e s e n t e.</p>
         <p class="text-sm mb-3" style="color:#1C2B3A; text-align:justify">Por medio de la presente se le cita a presentarse en las instalaciones de este plantel el <strong>${fechaHoraLarga(r.cita_fecha)}</strong>, para tratar un asunto relacionado con la conducta de su hijo(a), por el siguiente motivo: <strong>${escHtml(r.tipos_incidencia?.nombre || "")}</strong>, ocurrido el ${fechaLarga(r.fecha_hecho + "T00:00:00")}.</p>
         <p class="text-sm mb-3" style="color:#1C2B3A; text-align:justify">Su asistencia es indispensable para dialogar sobre lo ocurrido y establecer los acuerdos que correspondan. De no poder asistir en la fecha indicada, le pedimos comunicarse previamente con la Dirección.</p>
@@ -5216,7 +5385,7 @@ function renderAvisos(main) {
       doc.innerHTML = `<div id="ibAvisoCircular" class="ib-imprimible ib-hoja p-6 rounded-xl bg-white border mt-4" style="border-color:#E1DED5; width:100%; max-width:760px">
           ${membreteHtml(membrete)}
           <h3 class="text-sm font-bold text-center mb-1" style="color:#1E3A8A">AVISO A PADRES DE FAMILIA</h3>
-          <p class="text-xs text-right mb-3" style="color:#1C2B3A">${escHtml(membrete.ciudad || "")}${membrete.ciudad ? ", a " : "A "}${fechaLarga(aviso.creado_en)}.</p>
+          ${cierreFecha(aviso.creado_en, "0.4cm")}
           <p class="text-sm font-bold mb-2" style="color:#1E3A8A">${escHtml(aviso.titulo)}</p>
           <p class="text-sm mb-8" style="color:#1C2B3A; white-space:pre-line; text-align:justify">${escHtml(aviso.mensaje)}</p>
           <div class="ib-pie text-center" style="color:#1C2B3A"><p class="text-sm mb-10">Atentamente</p>
@@ -5331,6 +5500,14 @@ function firmaOficio(rotulo, sub) {
 function htmlOficio(tipo, ctx, op, folio, fechaEmision, calif) {
   return `<div class="ib-hoja">${htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif)}</div>`;
 }
+const LUGAR_EMISION = "Tlacolula de Matamoros, Oaxaca";
+const MESES_ES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+// "Tlacolula de Matamoros, Oaxaca. A 19 del mes de octubre del año 2026." alineado a la derecha.
+// `abajo` = espacio libre debajo (para que no invada el lugar de la firma).
+function cierreFecha(f, abajo) {
+  const d = f instanceof Date ? f : (typeof f === "string" && /^\d{4}-\d{2}-\d{2}$/.test(f) ? new Date(f + "T00:00:00") : new Date(f || Date.now()));
+  return `<p class="ib-fecha" style="text-align:right; margin:0 0 ${abajo || "1.6cm"} 0; font-size:13px; color:#1C2B3A">${LUGAR_EMISION}. A ${d.getDate()} del mes de ${MESES_ES[d.getMonth()]} del año ${d.getFullYear()}.</p>`;
+}
 function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
   const a = ctx.alumno, g = generoAlumno(a), insc = ctx.insc;
   const m = ctx.membrete;
@@ -5342,16 +5519,17 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
   const ciclo = insc?.ciclos_escolares?.nombre || "";
   const lineaOf = lineaOficialPlantel(ctx);
   const ciudad = m.ciudad || "";
-  const lugarFecha = `${ciudad ? escHtml(ciudad) + ", a " : "A "}${fechaLarga(fechaEmision)}.`;
+  const lugarFecha = cierreFecha(fechaEmision);
   const cabecera = `${membreteHtml(m)}${lineaOf ? `<p class="text-xs text-center mb-2" style="color:#6C7B8A">${escHtml(lineaOf)}</p>` : ""}
     <p class="text-xs text-right mb-3" style="color:#6C7B8A">${folio ? "Folio " + folio : "Vista previa (sin folio)"}</p>`;
   const quien = `<strong>${escHtml(director || "[Nombre del director pendiente]")}</strong>, Director(a) de ${escHtml(plantelNombre)}${lineaOf ? " (" + escHtml(lineaOf) + ")" : ""}`;
-  const datosAlumno = `${g.art} ${g.alu} <strong>${escHtml(nombre)}</strong>${a.curp ? `, con CURP <strong>${escHtml(a.curp)}</strong>` : ""}${a.matricula ? ` y matrícula <strong>${escHtml(a.matricula)}</strong>` : ""}`;
+  const idsAlumno = [a.curp ? `con CURP <strong>${escHtml(a.curp)}</strong>` : null, a.matricula ? `con matrícula <strong>${escHtml(a.matricula)}</strong>` : null].filter(Boolean);
+  const datosAlumno = `${g.art} ${g.alu} <strong>${escHtml(nombre)}</strong>${idsAlumno.length ? ", " + idsAlumno.join(", ") : ""}`;
   const dirigido = `<p class="text-sm mb-4" style="color:#1C2B3A"><strong>${escHtml((op.dirigidoA || "A QUIEN CORRESPONDA").toUpperCase())}</strong><br>P r e s e n t e.</p>`;
   const cierre = `
     <p class="text-sm mb-2" style="color:#1C2B3A; text-align:justify; line-height:2">${op.fin ? `Se extiende la presente a petición de la parte interesada ${escHtml(op.fin)}.` : "Se extiende la presente a petición de la parte interesada, para los fines que a esta convengan."}</p>
     <div class="ib-pie">
-    <p class="text-sm mb-8" style="color:#1C2B3A">${lugarFecha}</p>
+    ${lugarFecha}
     <p class="text-sm text-center mb-12" style="color:#1C2B3A">A t e n t a m e n t e</p>
     <div class="flex justify-around mt-8 mb-6">${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}${firmaOficio("Sello del plantel", "")}</div>
     </div>`;
@@ -5359,12 +5537,12 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
 
   if (tipo === "Carta de buena conducta") {
     return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CARTA DE BUENA CONDUCTA</h3>${dirigido}
-      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, hace constar que ${datosAlumno}, ${insc ? `${g.inscrito} en este plantel y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> en el ciclo escolar <strong>${escHtml(ciclo)}</strong>, ` : ""}ha observado durante su permanencia en esta institución una <strong>buena conducta</strong>, mostrando respeto hacia sus compañeros, docentes y personal del plantel, así como cumplimiento de las normas del reglamento escolar.</p>
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, hace constar que ${datosAlumno}, ${insc ? `se encuentra ${g.inscrito} en este plantel y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> en el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y ` : ""}ha observado durante su permanencia en esta institución una <strong>buena conducta</strong>, mostrando respeto hacia sus compañeros, docentes y personal del plantel, así como cumplimiento de las normas del reglamento escolar.</p>
       ${cierre}`;
   }
   if (tipo === "Constancia de estudios") {
     return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS</h3>${dirigido}
-      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>${insc.ciclos_escolares.fecha_inicio ? `, comprendido de ${escHtml(mesAnio(insc.ciclos_escolares.fecha_inicio))} a ${escHtml(mesAnio(insc.ciclos_escolares.fecha_fin))}` : ""}.</p>
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, se encuentra ${g.inscrito} en este plantel como ${g.regular} y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>${insc.ciclos_escolares.fecha_inicio ? `, comprendido de ${escHtml(mesAnio(insc.ciclos_escolares.fecha_inicio))} a ${escHtml(mesAnio(insc.ciclos_escolares.fecha_fin))}` : ""}.</p>
       ${cierre}`;
   }
   if (tipo === "Constancia de estudios con calificaciones") {
@@ -5381,7 +5559,7 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
             <tr style="background:#F4F1EB"><td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${calif.periodos.length + 1}">Promedio general</td><td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(calif.general)}</td></tr></tbody></table>
         <p class="text-xs mb-3" style="color:#6C7B8A">${calif.prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación registrada.</p>`;
     return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS CON CALIFICACIONES</h3>${dirigido}
-      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, es ${g.regular} de este plantel, cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
+      <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, se encuentra ${g.inscrito} en este plantel como ${g.regular} y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
       ${tabla}${cierre}`;
   }
   if (tipo === "Formato de inscripción") {
@@ -5404,7 +5582,7 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
         <div class="grid grid-cols-2 gap-x-4">${docs.map(d => `<div>☐ ${d}</div>`).join("")}</div>
         <p class="mt-3" style="text-align:justify">El padre, madre o tutor manifiesta que los datos asentados son verdaderos y que conoce y acepta el reglamento escolar y el aviso de privacidad del plantel.</p>
       </div>
-      <div class="ib-pie"><p class="text-xs mb-2" style="color:#6C7B8A">${lugarFecha}</p>
+      <div class="ib-pie">${lugarFecha}
       <div class="flex justify-around mt-8 mb-6">${firmaOficio("Padre, madre o tutor", t[0]?.nombre_completo || "Nombre y firma")}${firmaOficio(director || "Dirección", director ? "Director(a)" : "")}</div></div>`;
   }
   if (tipo === "Formato de baja") {
@@ -5412,7 +5590,7 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
     const t = ctx.tutores[0];
     return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">FORMATO DE BAJA DE ALUMNO</h3>
       <div class="text-sm" style="${estilo}">
-        <p class="mb-3">Por medio del presente se hace constar la baja de ${datosAlumno}${insc ? `, ${g.inscrito} en <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong>, ciclo escolar <strong>${escHtml(ciclo)}</strong>` : ""}, con fecha <strong>${fechaBaja}</strong>.</p>
+        <p class="mb-3">Por medio del presente se hace constar la baja de ${datosAlumno}${insc ? `, quien se encontraba ${g.inscrito} en <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong>, ciclo escolar <strong>${escHtml(ciclo)}</strong>` : ""}, con fecha <strong>${fechaBaja}</strong>.</p>
         <p class="mb-1"><strong>Motivo de la baja:</strong></p>
         <p class="mb-3" style="white-space:pre-line; border-bottom:1px solid #1C2B3A; min-height:1.8em">${escHtml(op.motivo || "")}</p>
         <p class="mb-1"><strong>Documentos devueltos al interesado:</strong></p>
@@ -5420,7 +5598,7 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
         <p class="mb-3"><strong>Situación de pagos:</strong> ☐ Sin adeudo &nbsp;&nbsp; ☐ Con adeudo por $ ______________</p>
         <p class="mb-3 text-xs">El padre, madre o tutor${t?.nombre_completo ? ` (<strong>${escHtml(t.nombre_completo)}</strong>)` : ""} manifiesta su conformidad con la baja y reconoce haber recibido la documentación señalada.</p>
       </div>
-      <div class="ib-pie"><p class="text-xs mb-2" style="color:#6C7B8A">${lugarFecha}</p>
+      <div class="ib-pie">${lugarFecha}
       <div class="flex justify-around mt-8 mb-6">${firmaOficio("Padre, madre o tutor", t?.nombre_completo || "")}${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}</div></div>`;
   }
   return "";
