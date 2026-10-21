@@ -66,19 +66,146 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+// ============================================================
+// Infraestructura global: barra de progreso al guardar, mayúsculas
+// automáticas y aviso al salir de una sección con datos sin guardar.
+// ============================================================
+let ibOps = 0, ibTimer = null, ibMostradaEn = 0, ibOcultarT = null;
+function ibBarra() {
+  let el = document.getElementById("ibGuardando");
+  if (el) return el;
+  if (!document.getElementById("ibGuardandoCss")) {
+    const st = document.createElement("style"); st.id = "ibGuardandoCss";
+    st.textContent = `#ibGuardando{position:fixed;left:0;right:0;top:0;z-index:99999;pointer-events:none;display:none}
+      #ibGuardando .ibg-bar{height:5px;background:#DCE3F5;overflow:hidden}
+      #ibGuardando .ibg-bar i{display:block;height:100%;width:40%;background:#1E3A8A;border-radius:3px;animation:ibgmove 1s ease-in-out infinite}
+      #ibGuardando .ibg-chip{margin:8px auto 0;width:max-content;max-width:92%;padding:6px 14px;border-radius:999px;background:#1E3A8A;color:#fff;font:600 13px Arial,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+      @keyframes ibgmove{0%{margin-left:-40%}100%{margin-left:100%}}`;
+    document.head.appendChild(st);
+  }
+  el = document.createElement("div"); el.id = "ibGuardando";
+  el.innerHTML = `<div class="ibg-bar"><i></i></div><div class="ibg-chip">Guardando… espera un momento</div>`;
+  document.body.appendChild(el);
+  return el;
+}
+function ibProgresoInicio() {
+  ibOps++;
+  if (ibOcultarT) { clearTimeout(ibOcultarT); ibOcultarT = null; }
+  if (ibOps === 1 && !ibTimer) ibTimer = setTimeout(() => { ibTimer = null; if (ibOps > 0) { ibBarra().style.display = "block"; ibMostradaEn = Date.now(); } }, 120);
+}
+function ibProgresoFin() {
+  ibOps = Math.max(0, ibOps - 1);
+  if (ibOps > 0) return;
+  if (ibTimer) { clearTimeout(ibTimer); ibTimer = null; return; }
+  const resta = Math.max(0, 450 - (Date.now() - ibMostradaEn));
+  ibOcultarT = setTimeout(() => { ibOcultarT = null; if (ibOps === 0) { const el = document.getElementById("ibGuardando"); if (el) el.style.display = "none"; } }, resta);
+}
+// Tras un guardado exitoso, lo capturado en pantalla ya no cuenta como "pendiente de guardar".
+function ibMarcarGuardado() {
+  const main = document.getElementById("main");
+  if (!main) return;
+  main.querySelectorAll("[data-tocado]").forEach(el => { try { if (el.type === "checkbox" || el.type === "radio") el.defaultChecked = el.checked; else el.defaultValue = el.value; } catch (e) { /* igual */ } delete el.dataset.tocado; });
+}
+// Envuelve cualquier promesa (subidas de archivos, etc.) con la barra de progreso.
+async function conProgreso(promesa) {
+  ibProgresoInicio();
+  try { return await promesa; } finally { ibProgresoFin(); }
+}
+(function instrumentarGuardado() {
+  try {
+    const envolver = (b) => {
+      if (!b || typeof b.then !== "function" || b.__ibw) return b;
+      b.__ibw = true;
+      const t = b.then;
+      b.then = function (ok, ko) {
+        ibProgresoInicio();
+        return t.call(this, v => { ibProgresoFin(); if (!(v && v.error)) ibMarcarGuardado(); return ok ? ok(v) : v; }, e => { ibProgresoFin(); if (ko) return ko(e); throw e; });
+      };
+      return b;
+    };
+    if (typeof sb.from === "function") {
+      const origFrom = sb.from.bind(sb);
+      sb.from = (tabla) => {
+        const q = origFrom(tabla);
+        ["insert", "update", "upsert", "delete"].forEach(m => { const f = q && q[m]; if (typeof f === "function") q[m] = (...a) => envolver(f.apply(q, a)); });
+        return q;
+      };
+    }
+    if (typeof sb.rpc === "function") {
+      const origRpc = sb.rpc.bind(sb);
+      const LECTURAS = ["aplicar_recargos", "asistencia_dia_alumnos", "personal_para_acceso"];
+      sb.rpc = (nombre, ...a) => { const r = origRpc(nombre, ...a); return LECTURAS.includes(nombre) ? r : envolver(r); };
+    }
+    if (sb.auth && typeof sb.auth.updateUser === "function") {
+      const origUpd = sb.auth.updateUser.bind(sb.auth);
+      sb.auth.updateUser = (...a) => conProgreso(origUpd(...a));
+    }
+  } catch (e) { /* si algo falla, el sistema funciona igual, solo sin barra */ }
+})();
+
+// --- Mayúsculas automáticas en los campos de captura de texto ---
+function campoSinMayusculas(el) {
+  if (el.dataset && el.dataset.nomayus) return true;
+  const tipo = (el.getAttribute("type") || "text").toLowerCase();
+  if (el.tagName !== "TEXTAREA" && !["text", "search"].includes(tipo)) return true;
+  const pista = `${el.id} ${el.name || ""} ${el.placeholder || ""}`.toLowerCase();
+  return /correo|e-?mail|mail|@|pass|contrase|url|enlace|http|usuario/.test(pista) || el.id === "rgTexto";
+}
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (!el || !(el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+  if (campoSinMayusculas(el)) return;
+  const v = el.value, mayus = v.toLocaleUpperCase("es-MX");
+  if (v !== mayus) {
+    let a = null, b = null;
+    try { a = el.selectionStart; b = el.selectionEnd; } catch (err) { /* algunos tipos no permiten cursor */ }
+    el.value = mayus;
+    try { if (a !== null) el.setSelectionRange(a, b); } catch (err) { /* igual */ }
+  }
+}, true);
+
+// --- Aviso al cambiar de sección con captura sin guardar ---
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (e.isTrusted && el && el.closest && el.closest("#main") && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) el.dataset.tocado = "1";
+}, true);
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (e.isTrusted && el && el.closest && el.closest("#main") && el.tagName === "INPUT" && ["checkbox", "radio"].includes(el.type)) el.dataset.tocado = "1";
+}, true);
+function hayCapturaSinGuardar() {
+  const main = document.getElementById("main");
+  if (!main) return false;
+  for (const el of main.querySelectorAll("input[data-tocado], textarea[data-tocado]")) {
+    if (el.disabled || el.type === "file") continue;
+    if (/busc|search|filtro|criterio/i.test(`${el.id} ${el.placeholder || ""}`) || el.type === "search") continue;
+    if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== el.defaultChecked) return true; continue; }
+    if (el.value !== el.defaultValue) return true;
+  }
+  return false;
+}
+function confirmarSalidaSinGuardar() {
+  if (!hayCapturaSinGuardar()) return true;
+  return confirm("Estás capturando información.\n\nSi sales de esta sección, lo que no hayas guardado se perderá.\n\n¿Quieres salir de todos modos?");
+}
+window.addEventListener("beforeunload", (e) => {
+  if (typeof state !== "undefined" && state.perfil && hayCapturaSinGuardar()) { e.preventDefault(); e.returnValue = ""; }
+});
+
 // Módulos del sistema y qué roles pueden verlos.
 // Los marcados "construido: false" muestran un placeholder por ahora.
 const MENU = [
   { id: "inicio", label: "Inicio", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
+  { id: "normatividad", label: "Normatividad", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
   { id: "asistencia", label: "Asistencia", roles: ["Administrador", "Director", "Profesor"], construido: true },
   { id: "pagos", label: "Pagos y Colegiaturas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "disciplina", label: "Disciplina", roles: ["Administrador", "Director", "Secretaria"], construido: true },
-  { id: "avisos", label: "Avisos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
+  { id: "avisos", label: "Avisos", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "mobiliario", label: "Inventario/Mobiliario", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "accesos", label: "Entradas y Salidas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "boletas", label: "Boletas", roles: ["Administrador", "Director", "Secretaria"], construido: true },
@@ -393,9 +520,10 @@ function renderApp() {
       <div id="main" class="p-5"></div>
     </div>`;
 
-  document.getElementById("logoutBtn").addEventListener("click", cerrarSesion);
+  document.getElementById("logoutBtn").addEventListener("click", () => { if (confirmarSalidaSinGuardar()) cerrarSesion(); });
   document.getElementById("cambiarPassBtn").addEventListener("click", abrirModalCambiarPassword);
   document.querySelectorAll(".menuBtn").forEach(b => b.addEventListener("click", () => {
+    if (!confirmarSalidaSinGuardar()) return;
     state.seccion = b.dataset.id;
     renderApp();
   }));
@@ -466,6 +594,7 @@ function renderSeccion() {
   if (typeof detenerEscaneoInv === "function") detenerEscaneoInv();
   if (typeof limpiarTodosTimersReporte === "function") limpiarTodosTimersReporte();
   if (state.seccion === "inicio") return renderInicio(main);
+  if (state.seccion === "normatividad") return renderNormatividad(main);
   if (state.seccion === "mobiliario") return renderMobiliario(main);
   if (state.seccion === "alumnos") return renderAlumnos(main);
   if (state.seccion === "accesos") return renderAccesos(main);
@@ -5210,7 +5339,23 @@ function renderDisciplina(main) {
 // ============================================================
 // Módulo Avisos (comunicados a padres de familia por WhatsApp)
 // ============================================================
+// Vista de solo lectura de los avisos para el profesorado.
+async function renderAvisosLectura(main) {
+  main.innerHTML = `<h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Avisos</h2><div id="avLect" class="max-w-3xl"><p class="text-xs" style="color:#6C7B8A">Cargando…</p></div>`;
+  const { data, error } = await sb.from("avisos").select("titulo, mensaje, creado_en, audiencia, nivel").order("creado_en", { ascending: false }).limit(100);
+  const caja = document.getElementById("avLect");
+  if (error) { caja.innerHTML = errBox(escHtml(error.message)); return; }
+  const lista = data || [];
+  caja.innerHTML = `<p class="text-xs mb-3" style="color:#6C7B8A">Avisos emitidos por la Dirección. Solo lectura.</p>` + (lista.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay avisos.</p>` : lista.map(a => `
+    <div class="p-3 rounded-xl bg-white border mb-2" style="border-color:#E1DED5">
+      <div class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(a.titulo)}</div>
+      <div class="text-xs mb-1" style="color:#6C7B8A">${fechaLarga(a.creado_en)} · ${a.audiencia === "Todos" ? "Todos" : a.audiencia === "Nivel" ? escHtml(a.nivel || "") : "Un grupo"}</div>
+      <div class="text-sm" style="color:#1C2B3A; white-space:pre-line">${escHtml(a.mensaje)}</div>
+    </div>`).join(""));
+}
+
 function renderAvisos(main) {
+  if (state.perfil.rol === "Profesor") return renderAvisosLectura(main);
   let tabActivo = "nuevo";
   main.innerHTML = `
     <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Avisos</h2>
@@ -5604,6 +5749,167 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
   return "";
 }
 
+// ============================================================
+// Módulo Normatividad: documentos (archivos) y reglamento escolar.
+// Edita: Administrador y Director. Los demás roles, solo lectura.
+// ============================================================
+const NORM_CATEGORIAS = ["Reglamento", "Ley o norma oficial", "Acuerdo", "Circular", "Manual", "Protocolo", "Formato", "Otro"];
+function renderNormatividad(main) {
+  const puedeEditar = ["Administrador", "Director"].includes(state.perfil.rol);
+  let tab = "docs";
+  const $ = id => document.getElementById(id);
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Normatividad</h2>
+    <div class="flex gap-1 mb-4">
+      <button class="nmTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="docs">Documentos</button>
+      <button class="nmTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="reglamento">Reglamento escolar</button>
+    </div>
+    <div id="nmCont" class="max-w-3xl"></div>`;
+  function pintarTabs() {
+    document.querySelectorAll(".nmTab").forEach(b => { const a = b.dataset.tab === tab; b.style.background = a ? "#1E3A8A" : "#F4F1EB"; b.style.color = a ? "#fff" : "#1E3A8A"; });
+  }
+  document.querySelectorAll(".nmTab").forEach(b => b.addEventListener("click", () => {
+    if (!confirmarSalidaSinGuardar()) return;
+    tab = b.dataset.tab; pintarTabs(); cargar();
+  }));
+  pintarTabs(); cargar();
+  function cargar() { const c = $("nmCont"); if (tab === "docs") tabDocs(c); else tabReglamento(c); }
+
+  const fmtTam = n => !n ? "" : n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  const limpiarNombre = n => n.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9._-]+/g, "_");
+
+  // ---------- Documentos ----------
+  async function tabDocs(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("normatividad_docs").select("*").order("categoria").order("titulo");
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    const docs = data || [];
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">${puedeEditar ? "Agrega, modifica o elimina los documentos normativos del plantel (PDF, Word, Excel o imágenes, hasta 20 MB)." : "Consulta de documentos normativos del plantel. Solo lectura."}</p>
+      ${puedeEditar ? `<button id="nmNuevo" class="mb-3 px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">+ Agregar documento</button>` : ""}
+      <div id="nmForm"></div>
+      <div id="nmLista">${docs.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay documentos cargados.</p>` : NORM_CATEGORIAS.concat([...new Set(docs.map(d => d.categoria))].filter(c => !NORM_CATEGORIAS.includes(c))).map(cat => {
+        const ds = docs.filter(d => d.categoria === cat); if (!ds.length) return "";
+        return `<p class="text-xs font-bold mt-3 mb-1" style="color:#1E3A8A">${escHtml(cat.toUpperCase())}</p>` + ds.map(d => `
+          <div class="p-3 rounded-xl bg-white border mb-2" style="border-color:#E1DED5">
+            <div class="text-sm font-semibold" style="color:#1E3A8A">${escHtml(d.titulo)}</div>
+            <div class="text-xs" style="color:#6C7B8A">${escHtml(d.nivel || "Todos")} · ${escHtml(d.archivo_nombre || "")} ${fmtTam(d.archivo_tam)} · ${fechaLarga(d.actualizado_en || d.creado_en)}</div>
+            ${d.descripcion ? `<div class="text-xs mt-1" style="color:#1C2B3A; white-space:pre-line">${escHtml(d.descripcion)}</div>` : ""}
+            <div class="flex gap-2 flex-wrap mt-2">
+              <button class="nmVer px-3 py-1 rounded-lg text-xs font-bold" data-id="${d.id}" style="background:#1E3A8A; color:#fff">Ver</button>
+              <button class="nmDesc px-3 py-1 rounded-lg text-xs font-semibold" data-id="${d.id}" style="background:#F4F1EB; color:#1E3A8A">Descargar</button>
+              ${puedeEditar ? `<button class="nmEd px-3 py-1 rounded-lg text-xs font-semibold" data-id="${d.id}" style="background:#EEF2FB; color:#1E3A8A">Modificar</button>
+              <button class="nmDel px-3 py-1 rounded-lg text-xs font-semibold" data-id="${d.id}" style="background:#FBEAE8; color:#B5453A">Eliminar</button>` : ""}
+            </div>
+          </div>`).join("");
+      }).join("")}</div>
+      <div id="nmMsg"></div>`;
+    const doc = id => docs.find(d => d.id === id);
+    const msg = h => { $("nmMsg").innerHTML = h; };
+    async function url(d, descargar) {
+      const opts = descargar ? { download: d.archivo_nombre || true } : undefined;
+      const r = await sb.storage.from("normatividad").createSignedUrl(d.archivo_path, 300, opts);
+      if (r.error) throw new Error(r.error.message);
+      return r.data.signedUrl;
+    }
+    cont.querySelectorAll(".nmVer").forEach(b => b.addEventListener("click", async () => {
+      const w = window.open("", "_blank");
+      try { const u = await conProgreso(url(doc(b.dataset.id), false)); if (w) w.location.href = u; else descargarUrl(u, doc(b.dataset.id).archivo_nombre || "documento"); }
+      catch (e) { if (w) w.close(); msg(errBox(escHtml(e.message))); }
+    }));
+    cont.querySelectorAll(".nmDesc").forEach(b => b.addEventListener("click", async () => {
+      try { const d = doc(b.dataset.id); descargarUrl(await conProgreso(url(d, true)), d.archivo_nombre || "documento"); }
+      catch (e) { msg(errBox(escHtml(e.message))); }
+    }));
+    if (!puedeEditar) return;
+    $("nmNuevo").addEventListener("click", () => formulario(null));
+    cont.querySelectorAll(".nmEd").forEach(b => b.addEventListener("click", () => formulario(doc(b.dataset.id))));
+    cont.querySelectorAll(".nmDel").forEach(b => b.addEventListener("click", async () => {
+      const d = doc(b.dataset.id);
+      if (!confirm(`¿Eliminar definitivamente "${d.titulo}"? Esta acción no se puede deshacer.`)) return;
+      const { error: e1 } = await sb.from("normatividad_docs").delete().eq("id", d.id);
+      if (e1) { msg(errBox(escHtml(e1.message))); return; }
+      await conProgreso(sb.storage.from("normatividad").remove([d.archivo_path]));
+      tabDocs(cont);
+    }));
+
+    function formulario(d) {
+      $("nmForm").innerHTML = `
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">${d ? "Modificar documento" : "Nuevo documento"}</p>
+          <input id="nmTitulo" value="${escHtml(d?.titulo || "")}" placeholder="Título del documento" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <select id="nmCat" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">${NORM_CATEGORIAS.map(c => `<option ${d?.categoria === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+            <select id="nmNivel" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">${["Todos", "Secundaria", "Preparatoria"].map(c => `<option ${(d?.nivel || "Todos") === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+          </div>
+          <textarea id="nmDescr" rows="2" placeholder="Descripción (opcional)" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">${escHtml(d?.descripcion || "")}</textarea>
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">${d ? "Reemplazar archivo (opcional; actual: " + escHtml(d.archivo_nombre || "") + ")" : "Archivo"}</label>
+          <input id="nmArchivo" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" class="w-full text-sm mb-2" />
+          <div id="nmFormMsg"></div>
+          <div class="flex gap-2">
+            <button id="nmCancelar" class="px-3 py-1.5 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
+            <button id="nmGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar</button>
+          </div>
+        </div>`;
+      $("nmForm").scrollIntoView({ behavior: "smooth" });
+      $("nmCancelar").addEventListener("click", () => { $("nmForm").innerHTML = ""; });
+      $("nmGuardar").addEventListener("click", async () => {
+        const fm = h => { $("nmFormMsg").innerHTML = h; };
+        const titulo = $("nmTitulo").value.trim();
+        const archivo = $("nmArchivo").files[0] || null;
+        if (!titulo) { fm(errBox("Escribe el título del documento.")); return; }
+        if (!d && !archivo) { fm(errBox("Selecciona el archivo.")); return; }
+        if (archivo && archivo.size > 20 * 1048576) { fm(errBox("El archivo pesa más de 20 MB.")); return; }
+        const btn = $("nmGuardar"); btn.disabled = true;
+        let nuevoPath = null;
+        try {
+          const fila = { titulo, categoria: $("nmCat").value, nivel: $("nmNivel").value, descripcion: $("nmDescr").value.trim() || null, actualizado_por: state.perfil.id, actualizado_en: new Date().toISOString() };
+          if (archivo) {
+            nuevoPath = `${crypto.randomUUID()}-${limpiarNombre(archivo.name)}`;
+            const up = await conProgreso(sb.storage.from("normatividad").upload(nuevoPath, archivo, { contentType: archivo.type || "application/octet-stream" }));
+            if (up.error) throw new Error(up.error.message);
+            Object.assign(fila, { archivo_path: nuevoPath, archivo_nombre: archivo.name, archivo_tipo: archivo.type || null, archivo_tam: archivo.size });
+          }
+          const r = d ? await sb.from("normatividad_docs").update(fila).eq("id", d.id) : await sb.from("normatividad_docs").insert({ ...fila, creado_por: state.perfil.id });
+          if (r.error) throw new Error(r.error.message);
+          if (archivo && d && d.archivo_path) await conProgreso(sb.storage.from("normatividad").remove([d.archivo_path]));
+          tabDocs(cont);
+        } catch (e) {
+          if (nuevoPath) { try { await sb.storage.from("normatividad").remove([nuevoPath]); } catch (x) { /* nada */ } }
+          btn.disabled = false; fm(errBox(escHtml(e.message)));
+        }
+      });
+    }
+  }
+
+  // ---------- Reglamento escolar (se imprime junto al aviso de privacidad al dar de alta a un alumno) ----------
+  async function tabReglamento(cont) {
+    let nivel = "Secundaria";
+    async function pintar() {
+      cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+      const reg = await cargarReglamento(nivel);
+      cont.innerHTML = `
+        <p class="text-xs mb-3" style="color:#6C7B8A">Este reglamento se imprime junto al aviso de privacidad al dar de alta a un alumno. ${puedeEditar ? 'Los títulos empiezan con "## ".' : "Solo lectura."}</p>
+        <div class="flex gap-2 mb-3">
+          ${["Secundaria", "Preparatoria"].map(n => `<button class="rgNivel px-3 py-1.5 rounded-lg text-sm font-semibold" data-n="${n}" style="background:${n === nivel ? "#1E3A8A" : "#F4F1EB"}; color:${n === nivel ? "#fff" : "#1E3A8A"}">${n}</button>`).join("")}
+        </div>
+        ${reg.personalizado ? `<p class="text-xs mb-2" style="color:#6C7B8A">Versión guardada: ${reg.version}</p>` : `<p class="text-xs mb-2" style="color:#B7791F">${puedeEditar ? "Texto base propuesto (aún no guardado). Revísalo, ajústalo a tu reglamento real y guarda." : "Texto base (aún no se ha guardado el reglamento definitivo)."}</p>`}
+        <textarea id="rgTexto" data-nomayus="1" rows="22" ${puedeEditar ? "" : "readonly"} class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">${escHtml(reg.contenido)}</textarea>
+        <div id="rgMsg" class="mt-2"></div>
+        ${puedeEditar ? `<button id="rgGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar reglamento de ${nivel}</button>` : ""}`;
+      cont.querySelectorAll(".rgNivel").forEach(b => b.addEventListener("click", () => { if (!confirmarSalidaSinGuardar()) return; nivel = b.dataset.n; pintar(); }));
+      const g = $("rgGuardar");
+      if (g) g.addEventListener("click", async () => {
+        g.disabled = true;
+        const { error } = await sb.from("reglamento_escolar").upsert({ nivel, contenido: $("rgTexto").value, version: (reg.version || 0) + 1, actualizado_en: new Date().toISOString(), actualizado_por: state.perfil.id }, { onConflict: "nivel" });
+        if (error) { g.disabled = false; $("rgMsg").innerHTML = errBox(escHtml(error.message)); return; }
+        pintar();
+      });
+    }
+    pintar();
+  }
+}
+
 function renderOficios(main) {
   const puedeConfig = ["Administrador", "Director"].includes(state.perfil.rol);
   let tabActivo = "generar";
@@ -5613,7 +5919,6 @@ function renderOficios(main) {
       <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="generar">Generar documento</button>
       <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="emitidos">Emitidos</button>
       <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="plantel">Datos del plantel</button>
-      <button class="ofTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="reglamento">Reglamento escolar</button>
     </div>
     <div id="ofContenido" class="max-w-3xl"></div>`;
   function pintarTabs() {
@@ -5630,7 +5935,6 @@ function renderOficios(main) {
     const cont = document.getElementById("ofContenido");
     if (tabActivo === "generar") renderGenerar(cont);
     else if (tabActivo === "emitidos") renderEmitidos(cont);
-    else if (tabActivo === "reglamento") renderReglamentoTab(cont);
     else renderPlantel(cont);
   }
 
