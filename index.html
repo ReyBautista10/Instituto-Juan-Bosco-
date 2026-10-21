@@ -368,7 +368,7 @@ function renderLogin(mensajeExtra) {
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Correo</label>
         <input id="loginCorreo" type="email" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Contraseña</label>
-        <input id="loginPassword" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
+        ${htmlCampoPassword("loginPassword", "mb-2")}
         <button id="olvideBtn" type="button" class="text-xs mb-3 underline" style="color:#1E3A8A">¿Olvidaste tu contraseña?</button>
         <div id="loginMsg"></div>
         <button id="loginBtn" class="w-full py-2.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#F4F1EB">Entrar</button>
@@ -378,6 +378,7 @@ function renderLogin(mensajeExtra) {
   document.getElementById("loginPassword").addEventListener("keydown", e => { if (e.key === "Enter") iniciarSesion(); });
   document.getElementById("loginBtn").addEventListener("click", iniciarSesion);
   document.getElementById("olvideBtn").addEventListener("click", renderOlvidePassword);
+  enlazarPassword("loginPassword", null, null);
 }
 
 function renderOlvidePassword() {
@@ -411,6 +412,54 @@ function renderOlvidePassword() {
   });
 }
 
+// ---------- Reglas de contraseña, checklist dinámico y botón de ojo ----------
+const PASS_REGLAS = [
+  { id: "len", txt: "Mínimo 6 caracteres", ok: p => p.length >= 6 },
+  { id: "may", txt: "Al menos 1 mayúscula", ok: p => /[A-ZÁÉÍÓÚÑÜ]/.test(p) },
+  { id: "min", txt: "Al menos 1 minúscula", ok: p => /[a-záéíóúñü]/.test(p) },
+  { id: "num", txt: "Al menos 1 número", ok: p => /[0-9]/.test(p) },
+  { id: "esp", txt: "Al menos 1 carácter especial (@, #, $, *, …)", ok: p => /[^A-Za-z0-9ÁÉÍÓÚÑÜáéíóúñü\s]/.test(p) },
+];
+function passwordValida(p) { return PASS_REGLAS.every(r => r.ok(p || "")); }
+const OJO_ABIERTO = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const OJO_CERRADO = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.9 10.9 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12A3 3 0 1 1 9.88 9.88"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+// Campo de contraseña con botón de ojo (mostrar/ocultar).
+function htmlCampoPassword(id, mb) {
+  return `<div style="position:relative" class="${mb || "mb-3"}">
+    <input id="${id}" type="password" data-nomayus="1" autocomplete="off" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5; padding-right:42px" />
+    <button type="button" class="ibOjo" data-for="${id}" aria-label="Mostrar contraseña" title="Mostrar / ocultar" style="position:absolute; right:6px; top:50%; transform:translateY(-50%); background:none; border:none; color:#6C7B8A; padding:4px; cursor:pointer">${OJO_ABIERTO}</button>
+  </div>`;
+}
+function htmlChecklistPassword(id, conConfirmacion) {
+  const item = (k, t) => `<li data-r="${k}" style="color:#6C7B8A; list-style:none; line-height:1.6"><span class="ibCk" style="display:inline-block; width:1.2em; font-weight:700">○</span>${t}</li>`;
+  return `<ul id="${id}" class="text-xs mb-3" style="padding:0; margin:0">${PASS_REGLAS.map(r => item(r.id, r.txt)).join("")}${conConfirmacion ? item("igual", "Las contraseñas coinciden") : ""}</ul>`;
+}
+function enlazarPassword(idNueva, idConf, idLista) {
+  const nueva = document.getElementById(idNueva), conf = idConf ? document.getElementById(idConf) : null, lista = idLista ? document.getElementById(idLista) : null;
+  const marcar = (k, ok) => {
+    const li = lista && lista.querySelector(`[data-r="${k}"]`); if (!li) return;
+    li.style.color = ok ? "#2E7D4F" : "#6C7B8A"; li.style.fontWeight = ok ? "600" : "400";
+    li.querySelector(".ibCk").textContent = ok ? "✔" : "○";
+  };
+  const actualizar = () => {
+    PASS_REGLAS.forEach(r => marcar(r.id, r.ok(nueva.value)));
+    if (conf) marcar("igual", conf.value.length > 0 && conf.value === nueva.value);
+  };
+  nueva.addEventListener("input", actualizar);
+  if (conf) conf.addEventListener("input", actualizar);
+  [nueva, conf].forEach(inp => {
+    if (!inp) return;
+    const btn = document.querySelector(`.ibOjo[data-for="${inp.id}"]`);
+    if (btn) btn.addEventListener("click", () => {
+      const ver = inp.type === "password";
+      inp.type = ver ? "text" : "password";
+      btn.innerHTML = ver ? OJO_CERRADO : OJO_ABIERTO;
+      btn.setAttribute("aria-label", ver ? "Ocultar contraseña" : "Mostrar contraseña");
+    });
+  });
+  actualizar();
+}
+
 function renderRestablecerPassword() {
   app.innerHTML = `
     <div class="min-h-screen flex items-center justify-center p-5">
@@ -419,20 +468,21 @@ function renderRestablecerPassword() {
           <div class="ib-brand text-lg font-semibold" style="color:#1E3A8A">Crear nueva contraseña</div>
         </div>
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nueva contraseña</label>
-        <input id="restNueva" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+        ${htmlCampoPassword("restNueva", "mb-2")}${htmlChecklistPassword("restLista", true)}
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Confirmar contraseña</label>
-        <input id="restConfirmar" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-4 outline-none border" style="border-color:#E1DED5" />
+        ${htmlCampoPassword("restConfirmar", "mb-4")}
         <div id="restMsg"></div>
         <button id="restGuardarBtn" class="w-full py-2.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#F4F1EB">Guardar nueva contraseña</button>
       </div>
     </div>`;
 
+  enlazarPassword("restNueva", "restConfirmar", "restLista");
   document.getElementById("restGuardarBtn").addEventListener("click", async () => {
     const nueva = document.getElementById("restNueva").value;
     const confirmar = document.getElementById("restConfirmar").value;
     const msg = document.getElementById("restMsg");
     msg.innerHTML = "";
-    if (!nueva || nueva.length < 6) { msg.innerHTML = errBox("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (!passwordValida(nueva)) { msg.innerHTML = errBox("La contraseña no cumple todos los requisitos de la lista."); return; }
     if (nueva !== confirmar) { msg.innerHTML = errBox("Las contraseñas no coinciden."); return; }
 
     const { error } = await sb.auth.updateUser({ password: nueva });
@@ -560,9 +610,9 @@ function abrirModalCambiarPassword() {
     <div class="rounded-2xl p-5 bg-white w-full max-w-sm">
       <p class="text-sm font-semibold mb-3" style="color:#1E3A8A">Cambiar mi contraseña</p>
       <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nueva contraseña</label>
-      <input id="cpNueva" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+      ${htmlCampoPassword("cpNueva", "mb-2")}${htmlChecklistPassword("cpLista", true)}
       <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Confirmar contraseña</label>
-      <input id="cpConfirmar" type="password" class="w-full px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5" />
+      ${htmlCampoPassword("cpConfirmar", "mb-3")}
       <div id="cpMsg"></div>
       <div class="flex gap-2">
         <button id="cpCancelar" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar</button>
@@ -571,6 +621,7 @@ function abrirModalCambiarPassword() {
     </div>`;
   document.body.appendChild(modal);
 
+  enlazarPassword("cpNueva", "cpConfirmar", "cpLista");
   document.getElementById("cpCancelar").addEventListener("click", () => modal.remove());
 
   document.getElementById("cpGuardar").addEventListener("click", async () => {
@@ -578,7 +629,7 @@ function abrirModalCambiarPassword() {
     const confirmar = document.getElementById("cpConfirmar").value;
     const msg = document.getElementById("cpMsg");
     msg.innerHTML = "";
-    if (!nueva || nueva.length < 6) { msg.innerHTML = errBox("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (!passwordValida(nueva)) { msg.innerHTML = errBox("La contraseña no cumple todos los requisitos de la lista."); return; }
     if (nueva !== confirmar) { msg.innerHTML = errBox("Las contraseñas no coinciden."); return; }
 
     const { error } = await sb.auth.updateUser({ password: nueva });
@@ -5340,10 +5391,9 @@ function renderDisciplina(main) {
 // Módulo Avisos (comunicados a padres de familia por WhatsApp)
 // ============================================================
 // Vista de solo lectura de los avisos para el profesorado.
-async function renderAvisosLectura(main) {
-  main.innerHTML = `<h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Avisos</h2><div id="avLect" class="max-w-3xl"><p class="text-xs" style="color:#6C7B8A">Cargando…</p></div>`;
-  const { data, error } = await sb.from("avisos").select("titulo, mensaje, creado_en, audiencia, nivel").order("creado_en", { ascending: false }).limit(100);
-  const caja = document.getElementById("avLect");
+async function renderAvisosLectura(caja) {
+  caja.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+  const { data, error } = await sb.from("avisos").select("titulo, mensaje, creado_en, audiencia, nivel, creado_por").or(`creado_por.is.null,creado_por.neq.${state.perfil.id}`).order("creado_en", { ascending: false }).limit(100);
   if (error) { caja.innerHTML = errBox(escHtml(error.message)); return; }
   const lista = data || [];
   caja.innerHTML = `<p class="text-xs mb-3" style="color:#6C7B8A">Avisos emitidos por la Dirección. Solo lectura.</p>` + (lista.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay avisos.</p>` : lista.map(a => `
@@ -5355,13 +5405,14 @@ async function renderAvisosLectura(main) {
 }
 
 function renderAvisos(main) {
-  if (state.perfil.rol === "Profesor") return renderAvisosLectura(main);
+  const esProf = state.perfil.rol === "Profesor";
   let tabActivo = "nuevo";
   main.innerHTML = `
     <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Avisos</h2>
     <div class="flex gap-1 mb-4">
       <button class="avTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="nuevo">Nuevo aviso</button>
-      <button class="avTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="historial">Historial</button>
+      <button class="avTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="historial">${esProf ? "Mis avisos" : "Historial"}</button>
+      ${esProf ? `<button class="avTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="direccion">Avisos de la Dirección</button>` : ""}
     </div>
     <div id="avContenido" class="max-w-3xl"></div>`;
   function pintarTabs() {
@@ -5377,12 +5428,21 @@ function renderAvisos(main) {
 
   function cargarTab() {
     const cont = document.getElementById("avContenido");
-    if (tabActivo === "nuevo") renderNuevoAviso(cont); else renderHistorial(cont);
+    if (tabActivo === "nuevo") renderNuevoAviso(cont); else if (tabActivo === "direccion") renderAvisosLectura(cont, true); else renderHistorial(cont);
   }
 
   async function renderNuevoAviso(cont) {
-    const { data: grupos } = await sb.from("grupos").select("id, letra, grados(nombre, nivel)").order("letra");
-    const gruposOk = (grupos || []).filter(g => g.grados);
+    let gruposOk;
+    if (esProf) {
+      // Solo los grupos en los que el profesor imparte alguna materia.
+      const { data: asg } = await sb.from("profesor_materias_grupos").select("grupo_id, grupos(id, letra, grados(nombre, nivel))").eq("profesor_id", state.perfil.id);
+      const vistos = new Set();
+      gruposOk = (asg || []).map(a => a.grupos).filter(g => g && g.grados && !vistos.has(g.id) && vistos.add(g.id));
+      if (gruposOk.length === 0) { cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No tienes grupos asignados, por lo que no puedes enviar avisos.</p>`; return; }
+    } else {
+      const { data: grupos } = await sb.from("grupos").select("id, letra, grados(nombre, nivel)").order("letra");
+      gruposOk = (grupos || []).filter(g => g.grados);
+    }
     cont.innerHTML = `
       <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Título</label>
@@ -5391,11 +5451,11 @@ function renderAvisos(main) {
         <textarea id="avMensaje" rows="5" class="w-full px-3 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" placeholder="Escribe el comunicado para los padres de familia."></textarea>
         <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">¿A quién va dirigido?</label>
         <div class="flex gap-2 flex-wrap mb-2">
-          <select id="avAudiencia" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">
-            <option value="Todos">Todos los padres de familia</option><option value="Nivel">Un nivel</option><option value="Grupo">Un grupo</option>
+          <select id="avAudiencia" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5; ${esProf ? "display:none" : ""}">
+            ${esProf ? `<option value="Grupo" selected>Un grupo</option>` : `<option value="Todos">Todos los padres de familia</option><option value="Nivel">Un nivel</option><option value="Grupo">Un grupo</option>`}
           </select>
           <select id="avNivel" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5; display:none"><option>Secundaria</option><option>Preparatoria</option></select>
-          <select id="avGrupo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5; display:none">
+          <select id="avGrupo" class="px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5; ${esProf ? "" : "display:none"}">
             ${gruposOk.map(g => `<option value="${g.id}">${escHtml(g.grados.nombre)} "${escHtml(g.letra)}" (${escHtml(g.grados.nivel)})</option>`).join("")}
           </select>
         </div>
@@ -5431,7 +5491,9 @@ function renderAvisos(main) {
 
   async function renderHistorial(cont) {
     cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
-    const { data, error } = await sb.from("avisos").select("*").order("creado_en", { ascending: false }).limit(100);
+    let qa = sb.from("avisos").select("*").order("creado_en", { ascending: false }).limit(100);
+    if (esProf) qa = qa.eq("creado_por", state.perfil.id);
+    const { data, error } = await qa;
     if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
     const lista = data || [];
     cont.innerHTML = (lista.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay avisos.</p>` : lista.map((a, i) => `
