@@ -199,7 +199,6 @@ const MENU = [
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "normatividad", label: "Normatividad", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
-  { id: "justificar", label: "Justificar faltas", roles: ["Administrador", "Director"], construido: true },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
@@ -658,7 +657,6 @@ function renderSeccion() {
   if (typeof limpiarTodosTimersReporte === "function") limpiarTodosTimersReporte();
   if (state.seccion === "inicio") return renderInicio(main);
   if (state.seccion === "normatividad") return renderNormatividad(main);
-  if (state.seccion === "justificar") return renderJustificar(main);
   if (state.seccion === "mobiliario") return renderMobiliario(main);
   if (state.seccion === "alumnos") return renderAlumnos(main);
   if (state.seccion === "accesos") return renderAccesos(main);
@@ -681,7 +679,6 @@ const MENU_DESCRIPCIONES = {
   alumnos: "Alta, edición y baja de alumnos con sus tutores; grupos, ciclos escolares y fechas de los periodos de evaluación.",
   oficios: "Constancias de estudios, cartas de buena conducta y formatos de inscripción y baja, con folio y firma del director.",
   normatividad: "Reglamento escolar y demás documentos normativos del plantel.",
-  justificar: "Justificar las faltas de los alumnos por día o por rango de fechas y consultar el historial.",
   calificaciones: "Captura de criterios y calificaciones de tus materias, cálculo de asistencia y solicitudes de modificación.",
   catedraticos: "Alta de catedráticos y asignación de materias y grupos.",
   privacidad: "Avisos de privacidad de alumnos, padres y docentes, y sus consentimientos.",
@@ -690,7 +687,7 @@ const MENU_DESCRIPCIONES = {
   disciplina: "Reportes de incidencias, citatorios a padres de familia y actas de acuerdos.",
   avisos: "Comunicados para padres de familia por WhatsApp.",
   mobiliario: "Inventario del mobiliario, etiquetas con QR, revisión y bajas.",
-  accesos: "Entradas y salidas con reconocimiento facial, reporte de ausencias y reporte del personal.",
+  accesos: "Entradas y salidas con reconocimiento facial, justificación de faltas, reporte de ausencias y reporte del personal.",
   boletas: "Boletas de calificaciones por alumno o por grupo.",
   bitacora: "Registro de los movimientos realizados en el sistema.",
   usuarios: "Administración de usuarios del sistema.",
@@ -2805,15 +2802,21 @@ function fechaLocalISO(d) {
   return `${f.getFullYear()}-${p(f.getMonth() + 1)}-${p(f.getDate())}`;
 }
 
+// Primera fecha (AAAA-MM-DD) desde la que el alumno existe en el sistema: la más tardía entre su ingreso e inscripción.
+function fechaDesdeAlumno(insc) {
+  const a = String(insc?.alumnos?.fecha_ingreso || "").slice(0, 10), b = String(insc?.fecha_inscripcion || "").slice(0, 10);
+  return a > b ? a : b;   // vacío ("") se considera sin restricción
+}
 // Alumnos inscritos de varios grupos y su primera entrada / última salida de un día.
 async function asistenciaDelDia(grupoIds, fechaISO) {
   const inicio = new Date(fechaISO + "T00:00:00");
   const fin = new Date(inicio.getTime() + 86400000);
   const { data: insc, error } = await sb.from("inscripciones")
-    .select("grupo_id, alumnos(id, nombres, apellido_paterno, apellido_materno, activo)")
+    .select("grupo_id, fecha_inscripcion, alumnos(id, nombres, apellido_paterno, apellido_materno, activo, fecha_ingreso)")
     .in("grupo_id", grupoIds).eq("estado", "Inscrito");
   if (error) throw error;
-  const alumnos = (insc || []).filter(i => i.alumnos && i.alumnos.activo !== false);
+  // Solo cuentan los alumnos que a esa fecha ya estaban dados de alta en el sistema.
+  const alumnos = (insc || []).filter(i => i.alumnos && i.alumnos.activo !== false && fechaDesdeAlumno(i) <= fechaISO);
   const alumnoIds = [...new Set(alumnos.map(i => i.alumnos.id))];
   const regs = [];
   for (let i = 0; i < alumnoIds.length; i += 150) {
@@ -2904,13 +2907,25 @@ async function renderConsultaAsistencia(cont) {
               </tr>`).join("")}</tbody>
           </table>
         </div><div id="caJustMsg" class="mt-2"></div>`;
-      res.querySelectorAll(".caJust").forEach(sel => sel.addEventListener("change", async () => {
-        try {
-          const motivo = sel.value === "1" ? (prompt("Motivo de la justificación (opcional):") || null) : null;
-          await guardarAusenciasDia([{ alumno_id: sel.dataset.id, fecha, justificada: sel.value === "1", motivo }]);
-          document.getElementById("caJustMsg").innerHTML = okBox("Guardado.");
-        } catch (e) { document.getElementById("caJustMsg").innerHTML = errBox(escHtml(e.message)); }
-      }));
+      res.querySelectorAll(".caJust").forEach(sel => {
+        sel.dataset.previo = sel.value;
+        if (state.perfil.rol === "Secretaria") sel.disabled = true;   // solo Dirección y Administración justifican
+        sel.addEventListener("change", async () => {
+          const msg = document.getElementById("caJustMsg");
+          const previo = sel.dataset.previo;
+          try {
+            let motivo = null;
+            if (sel.value === "1") {
+              const t = prompt("Motivo de la justificación (obligatorio):");
+              if (t === null || !t.trim()) { sel.value = previo; msg.innerHTML = errBox("No se justificó: el motivo es obligatorio."); return; }
+              motivo = t.trim();
+            }
+            await guardarAusenciasDia([{ alumno_id: sel.dataset.id, fecha, justificada: sel.value === "1", motivo }]);
+            sel.dataset.previo = sel.value;
+            msg.innerHTML = okBox("Guardado.");
+          } catch (e) { sel.value = previo; msg.innerHTML = errBox(escHtml(e.message)); }
+        });
+      });
     } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
   }
 }
@@ -2992,7 +3007,7 @@ async function renderReporteAusencias(cont) {
                 ${aus.map(f => `<div class="flex items-center gap-2 py-1.5 flex-wrap" style="border-top:1px solid #F0EDE5">
                   <span class="flex-1 text-sm min-w-40">${escHtml(f.nombre)}</span>
                   <select class="rvJust px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" ${state.perfil.rol === "Secretaria" ? "disabled" : ""} style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>
-                  <input class="rvMotivo px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" ${state.perfil.rol === "Secretaria" ? "disabled" : ""} placeholder="Motivo (opcional)" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
+                  <input class="rvMotivo px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" ${state.perfil.rol === "Secretaria" ? "disabled" : ""} placeholder="Motivo (obligatorio si es justificada)" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
                 </div>`).join("")}
               </div>`;
             }).join("")}
@@ -3005,6 +3020,13 @@ async function renderReporteAusencias(cont) {
           try {
             const motivos = {};
             cont.querySelectorAll(".rvMotivo").forEach(i => { motivos[i.dataset.id] = i.value.trim() || null; });
+            const sinMotivo = [...cont.querySelectorAll(".rvJust")].filter(sel => !sel.disabled && sel.value === "1" && !motivos[sel.dataset.id]);
+            if (sinMotivo.length) {
+              sinMotivo.forEach(sel => { const m = cont.querySelector(`.rvMotivo[data-id="${sel.dataset.id}"]`); if (m) m.style.borderColor = "#B5453A"; });
+              btn.disabled = false;
+              document.getElementById("rvMsg").innerHTML = errBox("Escribe el motivo de cada falta justificada (marcados en rojo).");
+              return;
+            }
             await guardarAusenciasDia([...cont.querySelectorAll(".rvJust")].filter(sel => state.perfil.rol !== "Secretaria" || !ausMap.get(sel.dataset.id)?.justificada).map(sel => ({ alumno_id: sel.dataset.id, fecha: hoy, justificada: sel.value === "1", motivo: sel.value === "1" ? motivos[sel.dataset.id] : null })));
             revisado = true;
             generar();
@@ -4499,6 +4521,7 @@ async function calcularAsistenciaClase(asignacion, alumnos, desde, hasta) {
   const filas = alumnos.map(a => {
     let asist = 0, faltas = 0, just = 0;
     fechas.forEach(f => {
+      if (a._desde && f < a._desde) return;   // aún no estaba dado de alta ese día
       const p = puerta.get(a.id + "|" + f);
       const marcado = presentes.has(a.id + "|" + f);
       if (p?.entro) { marcado ? asist++ : faltas++; }
@@ -4617,7 +4640,7 @@ function renderCalificaciones(main) {
 
     const [criteriosRes, alumnosRes] = await Promise.all([
       sb.from("criterios_evaluacion").select("*").eq("asignacion_id", asignacion.id).order("periodo").order("orden"),
-      sb.from("inscripciones").select("alumno_id, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula)").eq("grupo_id", asignacion.grupo_id).eq("ciclo_escolar_id", asignacion.ciclo_escolar_id).eq("estado", "Inscrito"),
+      sb.from("inscripciones").select("alumno_id, fecha_inscripcion, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula, fecha_ingreso)").eq("grupo_id", asignacion.grupo_id).eq("ciclo_escolar_id", asignacion.ciclo_escolar_id).eq("estado", "Inscrito"),
     ]);
 
     if (criteriosRes.error) { cont.innerHTML = errBox(criteriosRes.error.message); return; }
@@ -4629,7 +4652,7 @@ function renderCalificaciones(main) {
     (periodosRes.data || []).forEach(p => { estadosPeriodo[p.periodo] = p.estado; });
     const solicitudesPend = new Set((solRes.data || []).map(r => r.periodo));
     const criterios = criteriosRes.data || [];
-    const alumnos = (alumnosRes.data || []).map(i => i.alumnos).filter(Boolean).sort((a, b) => a.apellido_paterno.localeCompare(b.apellido_paterno));
+    const alumnos = (alumnosRes.data || []).map(i => i.alumnos ? { ...i.alumnos, _desde: fechaDesdeAlumno(i) } : null).filter(Boolean).sort((a, b) => a.apellido_paterno.localeCompare(b.apellido_paterno));
 
     const idsCriterios = criterios.map(c => c.id);
     const valoresCache = {};
@@ -6034,150 +6057,6 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
       <div class="flex justify-around mt-8 mb-6">${firmaOficio("Padre, madre o tutor", t?.nombre_completo || "")}${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}</div></div>`;
   }
   return "";
-}
-
-// ============================================================
-// Justificar faltas de alumnos (solo Administrador y Director)
-// ============================================================
-function renderJustificar(main) {
-  let tab = "dia";
-  const $ = id => document.getElementById(id);
-  main.innerHTML = `
-    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Justificar faltas</h2>
-    <div class="flex gap-1 mb-4 flex-wrap">
-      <button class="jfTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="dia">Por día</button>
-      <button class="jfTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="rango">Varios días de un alumno</button>
-      <button class="jfTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="historial">Historial</button>
-    </div>
-    <div id="jfCont" class="max-w-3xl"></div>`;
-  const pintarTabs = () => document.querySelectorAll(".jfTab").forEach(b => { const a = b.dataset.tab === tab; b.style.background = a ? "#1E3A8A" : "#F4F1EB"; b.style.color = a ? "#fff" : "#1E3A8A"; });
-  document.querySelectorAll(".jfTab").forEach(b => b.addEventListener("click", () => { if (!confirmarSalidaSinGuardar()) return; tab = b.dataset.tab; pintarTabs(); cargar(); }));
-  pintarTabs(); cargar();
-  function cargar() { const c = $("jfCont"); if (tab === "dia") tabDia(c); else if (tab === "rango") tabRango(c); else tabHistorial(c); }
-  const dias = (d, h) => { const r = []; for (let x = new Date(d + "T00:00:00"); x <= new Date(h + "T00:00:00"); x.setDate(x.getDate() + 1)) if (x.getDay() !== 0 && x.getDay() !== 6) r.push(fechaLocalISO(x)); return r; };
-
-  async function tabDia(cont) {
-    let grupos;
-    try { grupos = await cargarGruposActivos(); } catch (e) { cont.innerHTML = errBox(escHtml(e.message)); return; }
-    const hoy = fechaLocalISO();
-    cont.innerHTML = `
-      <p class="text-xs mb-3" style="color:#6C7B8A">Muestra a los alumnos que no registraron entrada en la fecha elegida. Marca cuáles faltas son justificadas; esas no afectan la calificación del criterio de asistencia.</p>
-      <div class="p-4 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap items-end" style="border-color:#E1DED5">
-        <div><label class="block text-xs" style="color:#6C7B8A">Fecha</label><input id="jfFecha" type="date" value="${hoy}" max="${hoy}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
-        <div class="flex-1 min-w-40"><label class="block text-xs" style="color:#6C7B8A">Grupo</label><select id="jfGrupo" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos los grupos</option>${grupos.map(g => `<option value="${g.id}">${escHtml(g.etiqueta)}</option>`).join("")}</select></div>
-        <button id="jfBuscar" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Ver ausentes</button>
-      </div>
-      <div id="jfRes"></div>`;
-    $("jfBuscar").addEventListener("click", async () => {
-      const fecha = $("jfFecha").value, gid = $("jfGrupo").value, res = $("jfRes");
-      if (!fecha) { res.innerHTML = errBox("Elige la fecha."); return; }
-      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
-      try {
-        const gs = gid ? grupos.filter(g => g.id === gid) : grupos;
-        const filas = await asistenciaDelDia(gs.map(g => g.id), fecha);
-        if (filas.length && filas.every(f => !f.entrada)) res.innerHTML = `<p class="text-xs mb-2" style="color:#B7791F">Nadie registró entrada en esta fecha (¿fue día sin clases?). No se justifica en bloque un día sin actividad.</p>`;
-        const ausentes = filas.filter(f => !f.entrada);
-        if (filas.length && ausentes.length === filas.length) return;
-        if (!ausentes.length) { res.innerHTML = `<p class="text-sm" style="color:#3F7A5E">No hay alumnos ausentes en esa fecha.</p>`; return; }
-        let ausMap = new Map();
-        try { ausMap = await cargarAusenciasDia(ausentes.map(f => f.alumno.id), fecha); } catch (e) { /* tabla aún sin datos */ }
-        res.innerHTML = gs.map(g => {
-          const aus = ausentes.filter(f => f.grupo_id === g.id); if (!aus.length) return "";
-          return `<div class="p-3 rounded-xl bg-white border mb-3" style="border-color:#E1DED5"><p class="text-sm font-bold mb-2" style="color:#1E3A8A">${escHtml(g.etiqueta)}</p>
-            ${aus.map(f => `<div class="flex items-center gap-2 py-1.5 flex-wrap" style="border-top:1px solid #F0EDE5">
-              <span class="flex-1 text-sm min-w-40">${escHtml(f.nombre)}</span>
-              <select class="jfJust px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>
-              <input class="jfMot px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" placeholder="Motivo" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
-            </div>`).join("")}</div>`;
-        }).join("") + `<div id="jfMsg"></div><button id="jfGuardar" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Guardar</button>`;
-        $("jfGuardar").addEventListener("click", async () => {
-          const btn = $("jfGuardar"); btn.disabled = true;
-          const mot = {}; res.querySelectorAll(".jfMot").forEach(i => { mot[i.dataset.id] = i.value.trim(); });
-          const faltaMotivo = [...res.querySelectorAll(".jfJust")].some(sel => sel.value === "1" && !mot[sel.dataset.id]);
-          if (faltaMotivo) { btn.disabled = false; $("jfMsg").innerHTML = errBox("Escribe el motivo de cada falta justificada."); return; }
-          try {
-            await guardarAusenciasDia([...res.querySelectorAll(".jfJust")].map(sel => ({ alumno_id: sel.dataset.id, fecha, justificada: sel.value === "1", motivo: sel.value === "1" ? mot[sel.dataset.id] : null })));
-            $("jfMsg").innerHTML = okBox("Justificaciones guardadas."); btn.disabled = false;
-          } catch (e) { btn.disabled = false; $("jfMsg").innerHTML = errBox(escHtml(e.message)); }
-        });
-      } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
-    });
-  }
-
-  function tabRango(cont) {
-    let alumno = null;
-    const hoy = fechaLocalISO();
-    cont.innerHTML = `
-      <p class="text-xs mb-3" style="color:#6C7B8A">Para incapacidades o permisos de varios días: se justifican de lunes a viernes dentro del rango.</p>
-      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
-        <input id="jrBuscar" placeholder="Buscar alumno por nombre o matrícula" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
-        <div id="jrRes"></div>
-        <div id="jrSel" class="text-sm font-semibold mb-2" style="color:#1E3A8A"></div>
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="jrDesde" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
-          <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="jrHasta" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
-        </div>
-        <input id="jrMotivo" placeholder="Motivo (obligatorio)" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
-        <div id="jrMsg"></div>
-        <button id="jrOk" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Justificar días</button>
-      </div>`;
-    let t = null;
-    $("jrBuscar").addEventListener("input", () => {
-      clearTimeout(t);
-      t = setTimeout(async () => {
-        const q = $("jrBuscar").value.trim().replace(/[,%()]/g, " ");
-        if (q.length < 2) { $("jrRes").innerHTML = ""; return; }
-        const { data } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula").or(`nombres.ilike.%${q}%,apellido_paterno.ilike.%${q}%,apellido_materno.ilike.%${q}%,matricula.ilike.%${q}%`).limit(8);
-        $("jrRes").innerHTML = (data || []).map((a, i) => `<button class="jrPick w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A">${escHtml(nombreCompletoAlumno(a))} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})</span></button>`).join("");
-        $("jrRes").querySelectorAll(".jrPick").forEach(b => b.addEventListener("click", () => { alumno = data[Number(b.dataset.i)]; $("jrSel").textContent = "Alumno: " + nombreCompletoAlumno(alumno); $("jrRes").innerHTML = ""; }));
-      }, 300);
-    });
-    $("jrOk").addEventListener("click", async () => {
-      const d = $("jrDesde").value, h = $("jrHasta").value, mot = $("jrMotivo").value.trim();
-      if (!alumno) { $("jrMsg").innerHTML = errBox("Selecciona al alumno."); return; }
-      if (!d || !h || d > h) { $("jrMsg").innerHTML = errBox("Revisa las fechas."); return; }
-      if (!mot) { $("jrMsg").innerHTML = errBox("Escribe el motivo."); return; }
-      const lista = dias(d, h);
-      if (!lista.length) { $("jrMsg").innerHTML = errBox("En ese rango no hay días de lunes a viernes."); return; }
-      if (lista.length > 60) { $("jrMsg").innerHTML = errBox("El rango no puede pasar de 60 días hábiles."); return; }
-      if (!confirm(`¿Justificar ${lista.length} día(s) de ${nombreCompletoAlumno(alumno)}?`)) return;
-      $("jrOk").disabled = true;
-      try { await guardarAusenciasDia(lista.map(f => ({ alumno_id: alumno.id, fecha: f, justificada: true, motivo: mot }))); $("jrMsg").innerHTML = okBox(`Listo: ${lista.length} día(s) justificado(s).`); }
-      catch (e) { $("jrMsg").innerHTML = errBox(escHtml(e.message)); }
-      $("jrOk").disabled = false;
-    });
-  }
-
-  async function tabHistorial(cont) {
-    const hoy = fechaLocalISO(), ini = new Date(); ini.setDate(ini.getDate() - 30);
-    cont.innerHTML = `
-      <div class="p-4 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap items-end" style="border-color:#E1DED5">
-        <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="jhDesde" type="date" value="${fechaLocalISO(ini)}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
-        <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="jhHasta" type="date" value="${hoy}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
-        <button id="jhVer" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Consultar</button>
-      </div><div id="jhRes"></div>`;
-    async function ver() {
-      const res = $("jhRes"); res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
-      const r = await sb.from("ausencias_dia").select("alumno_id, fecha, motivo").eq("justificada", true).gte("fecha", $("jhDesde").value).lte("fecha", $("jhHasta").value).order("fecha", { ascending: false }).limit(500);
-      if (r.error) { res.innerHTML = errBox(escHtml(r.error.message)); return; }
-      const filas = r.data || [];
-      if (!filas.length) { res.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay faltas justificadas en ese periodo.</p>`; return; }
-      const ids = [...new Set(filas.map(f => f.alumno_id))], nombres = new Map();
-      for (let i = 0; i < ids.length; i += 100) { const a = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno").in("id", ids.slice(i, i + 100)); (a.data || []).forEach(x => nombres.set(x.id, nombreCompletoAlumno(x))); }
-      res.innerHTML = `<p class="text-xs mb-2" style="color:#6C7B8A">${filas.length} falta(s) justificada(s).</p>` + filas.map((f, i) => `
-        <div class="flex items-center gap-2 py-2 flex-wrap" style="border-top:1px solid #F0EDE5">
-          <span class="text-xs" style="width:90px; color:#6C7B8A">${fechaLarga(f.fecha + "T00:00:00")}</span>
-          <span class="flex-1 text-sm min-w-40">${escHtml(nombres.get(f.alumno_id) || "Alumno")}<br><span class="text-xs" style="color:#6C7B8A">${escHtml(f.motivo || "")}</span></span>
-          <button class="jhQuitar px-2 py-1 rounded-lg text-xs font-semibold" data-i="${i}" style="background:#FBEAE8; color:#B5453A">Quitar justificación</button>
-        </div>`).join("");
-      res.querySelectorAll(".jhQuitar").forEach(b => b.addEventListener("click", async () => {
-        const f = filas[Number(b.dataset.i)];
-        if (!confirm("¿Quitar la justificación? La falta volverá a contar como inasistencia.")) return;
-        try { await guardarAusenciasDia([{ alumno_id: f.alumno_id, fecha: f.fecha, justificada: false, motivo: null }]); ver(); } catch (e) { res.insertAdjacentHTML("afterbegin", errBox(escHtml(e.message))); }
-      }));
-    }
-    $("jhVer").addEventListener("click", ver); ver();
-  }
 }
 
 // ============================================================
