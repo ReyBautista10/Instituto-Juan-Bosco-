@@ -801,7 +801,7 @@ function renderMobiliario(main) {
 
     cont.innerHTML = `
       <div class="max-w-2xl">
-        <p class="text-xs mb-3" style="color:#6C7B8A">Genera hojas tamaño carta (imagen PNG) con las etiquetas de 5 × 3 cm ya acomodadas: 3 columnas × 8 filas = 24 etiquetas por hoja. Imprímelas al 100% (tamaño real) en papel adherible.</p>
+        <p class="text-xs mb-3" style="color:#6C7B8A">Genera un PDF tamaño carta con las etiquetas de 5 × 3 cm ya acomodadas: 3 columnas × 8 filas = 24 etiquetas por hoja. Imprímelo al 100% (tamaño real) en papel adherible.</p>
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
           <div class="grid grid-cols-2 gap-2 mb-2">
             <div><label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Categoría</label>
@@ -854,7 +854,7 @@ function renderMobiliario(main) {
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-1" style="max-height:240px; overflow-y:auto">
             ${seleccion.map((i, k) => `<label class="flex items-center gap-1 text-xs" style="color:#1C2B3A"><input type="checkbox" class="hjCk" data-k="${k}" checked /> ${escHtml(i.id_etiqueta)}${i.activo === false ? " (baja)" : ""}</label>`).join("")}
           </div>
-          <button id="hjGenerar" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Generar hoja(s) carta</button>
+          <button id="hjGenerar" class="mt-3 px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Generar PDF para imprimir</button>
         </div>`;
       const act = () => { const n = seleccion.filter(i => i.marcado).length; $("hjCuenta").textContent = `${n} etiqueta(s) · ${Math.ceil(n / 24) || 0} hoja(s)`; };
       caja.querySelectorAll(".hjCk").forEach(ck => ck.addEventListener("change", () => { seleccion[ck.dataset.k].marcado = ck.checked; act(); }));
@@ -885,17 +885,24 @@ function renderMobiliario(main) {
             g.drawImage(c, x0 + (k % cols) * (lw + gap), y0 + Math.floor(k / cols) * (lh + gap), lw, lh);
             const pg = $("hjProg"); if (pg) pg.textContent = String(h + k + 1);
           }
-          const blob = await pngConDpi(await new Promise(res => hoja.toBlob(res, "image/png")), 300);
-          hojas.push({ blob, desde: grupo[0].id_etiqueta, hasta: grupo[grupo.length - 1].id_etiqueta, n: grupo.length });
+          const blob = await new Promise(res => hoja.toBlob(res, "image/jpeg", 0.95));
+          hojas.push({ blob, jpeg: new Uint8Array(await blob.arrayBuffer()), w: W, h: H, desde: grupo[0].id_etiqueta, hasta: grupo[grupo.length - 1].id_etiqueta, n: grupo.length });
         }
-        salida.innerHTML = `<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${hojas.map((hj, i) => {
-          const url = URL.createObjectURL(hj.blob); const nombre = `Etiquetas_hoja_${i + 1}.png`; urls.push({ url, nombre });
-          return `<div class="p-2 rounded-xl bg-white border" style="border-color:#E1DED5"><img src="${url}" alt="Hoja ${i + 1}" style="width:100%; border:1px solid #E1DED5" />
-            <p class="text-xs my-1" style="color:#6C7B8A">Hoja ${i + 1}: ${hj.n} etiqueta(s) (${escHtml(hj.desde)} … ${escHtml(hj.hasta)})</p>
-            <a href="${url}" download="${nombre}" class="inline-block px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#1E3A8A; color:#fff">Descargar ${nombre}</a></div>`; }).join("")}</div>
-          ${hojas.length > 1 ? `<button id="hjDescTodas" class="mt-3 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#F4F1EB; color:#1E3A8A">Descargar todas las hojas</button>` : ""}`;
-        const dt = $("hjDescTodas");
-        if (dt) dt.addEventListener("click", async () => { dt.disabled = true; for (const u of urls) { descargarUrl(u.url, u.nombre); await esperar(500); } dt.disabled = false; });
+        const pdfBlob = pdfDeImagenesJpeg(hojas.map(h => ({ jpeg: h.jpeg, w: h.w, h: h.h })));
+        const pdfUrl = URL.createObjectURL(pdfBlob); urls.push({ url: pdfUrl, nombre: "Etiquetas_inventario.pdf" });
+        salida.innerHTML = `
+          <div class="p-3 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+            <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">PDF listo para imprimir: ${hojas.length} hoja(s) tamaño carta · ${marcados.length} etiqueta(s)</p>
+            <p class="text-xs mb-2" style="color:#6C7B8A">Al imprimir elige <strong>tamaño real / 100%</strong> (no “ajustar a página”) para que cada etiqueta mida 5 × 3 cm.</p>
+            <div class="flex gap-2 flex-wrap">
+              <a href="${pdfUrl}" download="Etiquetas_inventario.pdf" class="inline-block px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Descargar PDF</a>
+              <a href="${pdfUrl}" target="_blank" class="inline-block px-4 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Abrir para imprimir</a>
+            </div>
+          </div>
+          <p class="text-xs mb-1" style="color:#6C7B8A">Vista previa de las hojas:</p>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">${hojas.map((hj, i) => {
+            const url = URL.createObjectURL(hj.blob); urls.push({ url, nombre: `hoja_${i + 1}.jpg` });
+            return `<div class="p-1 rounded-lg bg-white border" style="border-color:#E1DED5"><img src="${url}" alt="Hoja ${i + 1}" style="width:100%" /><p class="text-xs text-center" style="color:#6C7B8A">Hoja ${i + 1} · ${hj.n}</p></div>`; }).join("")}</div>`;
       } catch (e) { salida.innerHTML = errBox(escHtml(e.message)); }
       btn.disabled = false;
     }
@@ -1354,6 +1361,33 @@ async function pngConDpi(blob, dpi) {
   const out = new Uint8Array(buf.length + 21);
   out.set(buf.subarray(0, 33), 0); out.set(chunk, 33); out.set(buf.subarray(33), 54);
   return new Blob([out], { type: "image/png" });
+}
+// PDF tamaño carta (612 × 792 pt) con una imagen JPEG a página completa por hoja. Sin librerías externas.
+function pdfDeImagenesJpeg(paginas) {
+  const enc = new TextEncoder(), partes = [], offs = [];
+  let largo = 0;
+  const push = x => { const b = typeof x === "string" ? enc.encode(x) : x; partes.push(b); largo += b.length; };
+  const obj = (n, cuerpo, binario) => {
+    offs[n] = largo; push(`${n} 0 obj\n${cuerpo}`);
+    if (binario) { push("\nstream\n"); push(binario); push("\nendstream"); }
+    push("\nendobj\n");
+  };
+  push("%PDF-1.4\n");
+  const total = 2 + paginas.length * 3;
+  obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
+  obj(2, `<< /Type /Pages /Kids [${paginas.map((_, i) => `${3 + i * 3} 0 R`).join(" ")}] /Count ${paginas.length} >>`);
+  paginas.forEach((pg, i) => {
+    const pid = 3 + i * 3, cid = pid + 1, iid = pid + 2;
+    const contenido = "q 612 0 0 792 0 0 cm /Im0 Do Q";
+    obj(pid, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im0 ${iid} 0 R >> /ProcSet [/PDF /ImageC] >> /Contents ${cid} 0 R >>`);
+    obj(cid, `<< /Length ${contenido.length} >>`, contenido);
+    obj(iid, `<< /Type /XObject /Subtype /Image /Width ${pg.w} /Height ${pg.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${pg.jpeg.length} >>`, pg.jpeg);
+  });
+  const xref = largo;
+  push(`xref\n0 ${total + 1}\n0000000000 65535 f \n`);
+  for (let n = 1; n <= total; n++) push(`${String(offs[n]).padStart(10, "0")} 00000 n \n`);
+  push(`trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(partes, { type: "application/pdf" });
 }
 // Etiqueta de 5 cm × 3 cm a 600 dpi (1181 × 709 px): QR a la izquierda; categoría e ID a la derecha.
 async function generarEtiquetaPNG(item) {
