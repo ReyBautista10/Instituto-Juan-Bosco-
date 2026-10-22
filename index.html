@@ -422,6 +422,20 @@ const PASS_REGLAS = [
   { id: "num", txt: "Al menos 1 número", ok: p => /[0-9]/.test(p) },
   { id: "esp", txt: "Al menos 1 carácter especial (@, #, $, *, …)", ok: p => /[^A-Za-z0-9ÁÉÍÓÚÑÜáéíóúñü\s]/.test(p) },
 ];
+function traducirErrorAuth(m) {
+  const t = String(m || "");
+  const mapa = [
+    [/different from the old password|same as the old password/i, "La nueva contraseña debe ser diferente a la anterior."],
+    [/at least \d+ characters|too short/i, "La contraseña es demasiado corta."],
+    [/weak|easy to guess|pwned|compromised/i, "La contraseña es demasiado débil o aparece en filtraciones conocidas. Elige otra."],
+    [/reauthentication|nonce/i, "Por seguridad, vuelve a iniciar sesión y repite el cambio de contraseña."],
+    [/rate limit|too many/i, "Demasiados intentos. Espera unos minutos e inténtalo de nuevo."],
+    [/session.*(missing|expired)|not logged|jwt|invalid token/i, "Tu sesión expiró. Vuelve a iniciar sesión."],
+    [/network|failed to fetch/i, "No hay conexión. Revisa tu internet e inténtalo de nuevo."],
+  ];
+  for (const [r, txt] of mapa) if (r.test(t)) return txt;
+  return t;
+}
 function passwordValida(p) { return PASS_REGLAS.every(r => r.ok(p || "")); }
 const OJO_ABIERTO = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const OJO_CERRADO = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.9 10.9 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12A3 3 0 1 1 9.88 9.88"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
@@ -488,7 +502,7 @@ function renderRestablecerPassword() {
     if (nueva !== confirmar) { msg.innerHTML = errBox("Las contraseñas no coinciden."); return; }
 
     const { error } = await sb.auth.updateUser({ password: nueva });
-    if (error) { msg.innerHTML = errBox(error.message); return; }
+    if (error) { msg.innerHTML = errBox(escHtml(traducirErrorAuth(error.message))); return; }
 
     msg.innerHTML = okBox("Contraseña actualizada. Entrando…");
     setTimeout(async () => { await cargarPerfil(); }, 1200);
@@ -643,7 +657,7 @@ function abrirModalCambiarPassword() {
     if (nueva !== confirmar) { msg.innerHTML = errBox("Las contraseñas no coinciden."); return; }
 
     const { error } = await sb.auth.updateUser({ password: nueva });
-    if (error) { msg.innerHTML = errBox(error.message); return; }
+    if (error) { msg.innerHTML = errBox(escHtml(traducirErrorAuth(error.message))); return; }
     msg.innerHTML = okBox("Contraseña actualizada correctamente.");
     setTimeout(() => modal.remove(), 1500);
   });
@@ -2159,6 +2173,7 @@ function renderAccesos(main) {
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="consulta">Asistencia por día</button>
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="reporte">Reporte de ausencias</button>
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="personal">Reporte de personal</button>
+      ${["Administrador", "Director"].includes(state.perfil.rol) ? `<button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="justificar">Justificar varios días</button>` : ""}
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="rostros">Registrar rostros</button>
     </div>
     <div id="acContenido"></div>`;
@@ -2206,6 +2221,7 @@ function renderAccesos(main) {
     if (tabActivo === "reporte") return renderReporteAusencias(cont);
     if (tabActivo === "rostros") return renderRegistrarRostros(cont);
     if (tabActivo === "personal") return renderReportePersonal(cont);
+    if (tabActivo === "justificar") return renderJustificarVarios(cont);
   }
 
   // ---------- Reporte de entradas y salidas del personal (consulta, impresión y CSV) ----------
@@ -2857,6 +2873,89 @@ async function guardarAusenciasDia(filas) {
   if (!filas.length) return;
   const { error } = await sb.from("ausencias_dia").upsert(filas.map(f => ({ ...f, registrado_por: state.perfil.id })), { onConflict: "alumno_id,fecha" });
   if (error) throw error;
+}
+
+// Justificar faltas por varios días (e historial). Solo Administrador y Director. Se usa en Entradas y Salidas.
+function renderJustificarVarios(cont) {
+  const $ = id => document.getElementById(id);
+  const dias = (d, h) => { const r = []; for (let x = new Date(d + "T00:00:00"); x <= new Date(h + "T00:00:00"); x.setDate(x.getDate() + 1)) if (x.getDay() !== 0 && x.getDay() !== 6) r.push(fechaLocalISO(x)); return r; };
+  cont.innerHTML = `<div class="max-w-3xl"><div id="jvForm"></div><p class="text-sm font-bold mt-5 mb-2" style="color:#1E3A8A">Historial de faltas justificadas</p><div id="jvHist"></div></div>`;
+  function tabRango(cont) {
+    let alumno = null;
+    const hoy = fechaLocalISO();
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Para incapacidades o permisos de varios días: se justifican de lunes a viernes dentro del rango.</p>
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <input id="jrBuscar" placeholder="Buscar alumno por nombre o matrícula" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
+        <div id="jrRes"></div>
+        <div id="jrSel" class="text-sm font-semibold mb-2" style="color:#1E3A8A"></div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="jrDesde" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+          <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="jrHasta" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        </div>
+        <input id="jrMotivo" placeholder="Motivo (obligatorio)" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
+        <div id="jrMsg"></div>
+        <button id="jrOk" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Justificar días</button>
+      </div>`;
+    let t = null;
+    $("jrBuscar").addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        const q = $("jrBuscar").value.trim().replace(/[,%()]/g, " ");
+        if (q.length < 2) { $("jrRes").innerHTML = ""; return; }
+        const { data } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula").or(`nombres.ilike.%${q}%,apellido_paterno.ilike.%${q}%,apellido_materno.ilike.%${q}%,matricula.ilike.%${q}%`).limit(8);
+        $("jrRes").innerHTML = (data || []).map((a, i) => `<button class="jrPick w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A">${escHtml(nombreCompletoAlumno(a))} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})</span></button>`).join("");
+        $("jrRes").querySelectorAll(".jrPick").forEach(b => b.addEventListener("click", () => { alumno = data[Number(b.dataset.i)]; $("jrSel").textContent = "Alumno: " + nombreCompletoAlumno(alumno); $("jrRes").innerHTML = ""; }));
+      }, 300);
+    });
+    $("jrOk").addEventListener("click", async () => {
+      const d = $("jrDesde").value, h = $("jrHasta").value, mot = $("jrMotivo").value.trim();
+      if (!alumno) { $("jrMsg").innerHTML = errBox("Selecciona al alumno."); return; }
+      if (!d || !h || d > h) { $("jrMsg").innerHTML = errBox("Revisa las fechas."); return; }
+      if (!mot) { $("jrMsg").innerHTML = errBox("Escribe el motivo."); return; }
+      const lista = dias(d, h);
+      if (!lista.length) { $("jrMsg").innerHTML = errBox("En ese rango no hay días de lunes a viernes."); return; }
+      if (lista.length > 60) { $("jrMsg").innerHTML = errBox("El rango no puede pasar de 60 días hábiles."); return; }
+      if (!confirm(`¿Justificar ${lista.length} día(s) de ${nombreCompletoAlumno(alumno)}?`)) return;
+      $("jrOk").disabled = true;
+      try { await guardarAusenciasDia(lista.map(f => ({ alumno_id: alumno.id, fecha: f, justificada: true, motivo: mot }))); $("jrMsg").innerHTML = okBox(`Listo: ${lista.length} día(s) justificado(s).`); }
+      catch (e) { $("jrMsg").innerHTML = errBox(escHtml(e.message)); }
+      $("jrOk").disabled = false;
+    });
+  }
+
+  async function tabHistorial(cont) {
+    const hoy = fechaLocalISO(), ini = new Date(); ini.setDate(ini.getDate() - 30);
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap items-end" style="border-color:#E1DED5">
+        <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="jhDesde" type="date" value="${fechaLocalISO(ini)}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="jhHasta" type="date" value="${hoy}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        <button id="jhVer" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Consultar</button>
+      </div><div id="jhRes"></div>`;
+    async function ver() {
+      const res = $("jhRes"); res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
+      const r = await sb.from("ausencias_dia").select("alumno_id, fecha, motivo").eq("justificada", true).gte("fecha", $("jhDesde").value).lte("fecha", $("jhHasta").value).order("fecha", { ascending: false }).limit(500);
+      if (r.error) { res.innerHTML = errBox(escHtml(r.error.message)); return; }
+      const filas = r.data || [];
+      if (!filas.length) { res.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay faltas justificadas en ese periodo.</p>`; return; }
+      const ids = [...new Set(filas.map(f => f.alumno_id))], nombres = new Map();
+      for (let i = 0; i < ids.length; i += 100) { const a = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno").in("id", ids.slice(i, i + 100)); (a.data || []).forEach(x => nombres.set(x.id, nombreCompletoAlumno(x))); }
+      res.innerHTML = `<p class="text-xs mb-2" style="color:#6C7B8A">${filas.length} falta(s) justificada(s).</p>` + filas.map((f, i) => `
+        <div class="flex items-center gap-2 py-2 flex-wrap" style="border-top:1px solid #F0EDE5">
+          <span class="text-xs" style="width:90px; color:#6C7B8A">${fechaLarga(f.fecha + "T00:00:00")}</span>
+          <span class="flex-1 text-sm min-w-40">${escHtml(nombres.get(f.alumno_id) || "Alumno")}<br><span class="text-xs" style="color:#6C7B8A">${escHtml(f.motivo || "")}</span></span>
+          <button class="jhQuitar px-2 py-1 rounded-lg text-xs font-semibold" data-i="${i}" style="background:#FBEAE8; color:#B5453A">Quitar justificación</button>
+        </div>`).join("");
+      res.querySelectorAll(".jhQuitar").forEach(b => b.addEventListener("click", async () => {
+        const f = filas[Number(b.dataset.i)];
+        if (!confirm("¿Quitar la justificación? La falta volverá a contar como inasistencia.")) return;
+        try { await guardarAusenciasDia([{ alumno_id: f.alumno_id, fecha: f.fecha, justificada: false, motivo: null }]); ver(); } catch (e) { res.insertAdjacentHTML("afterbegin", errBox(escHtml(e.message))); }
+      }));
+    }
+    $("jhVer").addEventListener("click", ver); ver();
+  }
+  tabRango($("jvForm"));
+  tabHistorial($("jvHist"));
 }
 
 // ---------- Pestaña: consultar asistencia por día ----------
@@ -4524,9 +4623,10 @@ async function calcularAsistenciaClase(asignacion, alumnos, desde, hasta) {
       if (a._desde && f < a._desde) return;   // aún no estaba dado de alta ese día
       const p = puerta.get(a.id + "|" + f);
       const marcado = presentes.has(a.id + "|" + f);
+      // Sin registro de entrada en la escuela ese día = inasistencia (aunque el profesor lo haya marcado presente),
+      // salvo que Dirección/Administración la haya justificado. Con entrada: cuenta si el profesor lo marcó presente.
       if (p?.entro) { marcado ? asist++ : faltas++; }
-      else if (entroAlguien.has(f)) { if (p?.justificada) just++; else faltas++; }
-      else { marcado ? asist++ : faltas++; }
+      else { if (p?.justificada) just++; else faltas++; }
     });
     const base = asist + faltas;
     return { alumno_id: a.id, nombre: `${a.apellido_paterno} ${a.apellido_materno || ""} ${a.nombres}`.replace(/\s+/g, " ").trim(), asistencias: asist, faltas, justificadas: just,
