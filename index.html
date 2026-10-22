@@ -348,6 +348,8 @@ async function cargarPerfil() {
     return;
   }
   state.perfil = data;
+  state.seccion = "inicio";   // cada inicio de sesión arranca en Inicio
+  state.calInfo = null; state.calInfoCargando = false;
   renderApp();
 }
 
@@ -528,7 +530,7 @@ async function iniciarSesion() {
 
 async function cerrarSesion() {
   await sb.auth.signOut();
-  state.perfil = null; state.calInfo = null;
+  state.perfil = null; state.calInfo = null; state.calInfoCargando = false; state.seccion = "inicio";
   detenerMonitorInactividad();
   renderLogin();
 }
@@ -536,10 +538,18 @@ async function cerrarSesion() {
 // ============================================================
 // App principal: header + menú + contenido de la sección
 // ============================================================
+// Secciones que realmente puede ver la persona en sesión (por rol y, en Calificaciones, por materias/solicitudes).
+function menuDelUsuario() {
+  const ci = state.calInfo;
+  return MENU.filter(m => m.roles.includes(state.perfil.rol) && (m.id !== "calificaciones" || state.perfil.rol === "Profesor" || (ci && (ci.propias > 0 || ci.pend > 0))));
+}
+
 function renderApp() {
   iniciarMonitorInactividad();
   const ci = state.calInfo;
-  const menuVisible = MENU.filter(m => m.roles.includes(state.perfil.rol) && (m.id !== "calificaciones" || state.perfil.rol === "Profesor" || (ci && (ci.propias > 0 || ci.pend > 0))));
+  const menuVisible = menuDelUsuario();
+  // Si la sección guardada no está habilitada para este usuario, se regresa a Inicio.
+  if (!menuVisible.some(m => m.id === state.seccion)) state.seccion = "inicio";
 
   app.innerHTML = `
     <div class="min-h-screen">
@@ -642,6 +652,7 @@ function abrirModalCambiarPassword() {
 
 function renderSeccion() {
   const main = document.getElementById("main");
+  if (!menuDelUsuario().some(m => m.id === state.seccion)) state.seccion = "inicio";
   if (typeof detenerCamara === "function") detenerCamara();
   if (typeof detenerEscaneoInv === "function") detenerEscaneoInv();
   if (typeof limpiarTodosTimersReporte === "function") limpiarTodosTimersReporte();
@@ -666,19 +677,44 @@ function renderSeccion() {
   if (modulo && !modulo.construido) return renderEnConstruccion(main, modulo.label);
 }
 
+const MENU_DESCRIPCIONES = {
+  alumnos: "Alta, edición y baja de alumnos con sus tutores; grupos, ciclos escolares y fechas de los periodos de evaluación.",
+  oficios: "Constancias de estudios, cartas de buena conducta y formatos de inscripción y baja, con folio y firma del director.",
+  normatividad: "Reglamento escolar y demás documentos normativos del plantel.",
+  justificar: "Justificar las faltas de los alumnos por día o por rango de fechas y consultar el historial.",
+  calificaciones: "Captura de criterios y calificaciones de tus materias, cálculo de asistencia y solicitudes de modificación.",
+  catedraticos: "Alta de catedráticos y asignación de materias y grupos.",
+  privacidad: "Avisos de privacidad de alumnos, padres y docentes, y sus consentimientos.",
+  asistencia: "Lista de asistencia por clase y grupo.",
+  pagos: "Colegiaturas, cobros, recibos, adeudos, corte de caja, tarifas, recargos y exenciones.",
+  disciplina: "Reportes de incidencias, citatorios a padres de familia y actas de acuerdos.",
+  avisos: "Comunicados para padres de familia por WhatsApp.",
+  mobiliario: "Inventario del mobiliario, etiquetas con QR, revisión y bajas.",
+  accesos: "Entradas y salidas con reconocimiento facial, reporte de ausencias y reporte del personal.",
+  boletas: "Boletas de calificaciones por alumno o por grupo.",
+  bitacora: "Registro de los movimientos realizados en el sistema.",
+  usuarios: "Administración de usuarios del sistema.",
+};
+const MENU_DESCRIPCIONES_PROFESOR = {
+  normatividad: "Consulta del reglamento escolar y de los documentos normativos (solo lectura).",
+  avisos: "Envía avisos a los padres de tus grupos y consulta los avisos de la Dirección.",
+  asistencia: "Pasa lista en tus clases.",
+};
 function renderInicio(main) {
+  const rol = state.perfil.rol;
+  const secciones = menuDelUsuario().filter(m => m.id !== "inicio" && m.construido !== false);
+  const desc = m => (rol === "Profesor" && MENU_DESCRIPCIONES_PROFESOR[m.id]) || MENU_DESCRIPCIONES[m.id] || "";
   main.innerHTML = `
-    <h2 class="text-lg font-bold mb-2" style="color:#1E3A8A">Bienvenido/a, ${state.perfil.nombre_completo}</h2>
-    <p class="text-sm" style="color:#6C7B8A">Tu rol actual es: <strong>${state.perfil.rol}</strong></p>
-    <div class="mt-4 p-4 rounded-xl bg-white border max-w-md" style="border-color:#E1DED5">
-      <p class="text-sm" style="color:#1E3A8A">Este es el punto de partida del sistema. Los módulos se irán habilitando conforme se construyan:</p>
-      <ol class="text-sm mt-2 list-decimal list-inside" style="color:#6C7B8A">
-        <li>Alumnos y Grupos</li>
-        <li>Oficios y Documentos</li>
-        <li>Calificaciones y Evaluación</li>
-        <li>Catedráticos</li>
-      </ol>
+    <h2 class="text-lg font-bold mb-1" style="color:#1E3A8A">Bienvenido/a, ${escHtml(state.perfil.nombre_completo)}</h2>
+    <p class="text-sm mb-4" style="color:#6C7B8A">Tu rol: <strong>${escHtml(rol)}</strong>. Estas son las secciones disponibles en tu sesión:</p>
+    <div class="grid gap-2 max-w-3xl" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+      ${secciones.map(m => `
+        <button type="button" class="inicioSec text-left p-3 rounded-xl bg-white border" data-id="${m.id}" style="border-color:#E1DED5">
+          <div class="text-sm font-bold" style="color:#1E3A8A">${escHtml(m.label)}</div>
+          <div class="text-xs mt-1" style="color:#6C7B8A">${escHtml(desc(m))}</div>
+        </button>`).join("")}
     </div>`;
+  main.querySelectorAll(".inicioSec").forEach(b => b.addEventListener("click", () => { state.seccion = b.dataset.id; renderApp(); }));
 }
 
 function renderEnConstruccion(main, nombreModulo) {
