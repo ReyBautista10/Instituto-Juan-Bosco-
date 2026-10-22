@@ -199,6 +199,7 @@ const MENU = [
   { id: "alumnos", label: "Alumnos y Grupos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "oficios", label: "Oficios y Documentos", roles: ["Administrador", "Director", "Secretaria"], construido: true },
   { id: "normatividad", label: "Normatividad", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
+  { id: "justificar", label: "Justificar faltas", roles: ["Administrador", "Director"], construido: true },
   { id: "calificaciones", label: "Calificaciones", roles: ["Administrador", "Director", "Secretaria", "Profesor"], construido: true },
   { id: "catedraticos", label: "Catedráticos", roles: ["Administrador", "Director"], construido: true },
   { id: "privacidad", label: "Aviso de Privacidad", roles: ["Administrador"], construido: true },
@@ -646,6 +647,7 @@ function renderSeccion() {
   if (typeof limpiarTodosTimersReporte === "function") limpiarTodosTimersReporte();
   if (state.seccion === "inicio") return renderInicio(main);
   if (state.seccion === "normatividad") return renderNormatividad(main);
+  if (state.seccion === "justificar") return renderJustificar(main);
   if (state.seccion === "mobiliario") return renderMobiliario(main);
   if (state.seccion === "alumnos") return renderAlumnos(main);
   if (state.seccion === "accesos") return renderAccesos(main);
@@ -1352,6 +1354,7 @@ function renderAlumnos(main) {
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="ciclos">Ciclos Escolares</button>
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="grupos">Grupos</button>
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="alumnos">Alumnos</button>
+      <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="periodos">Periodos de evaluación</button>
     </div>
     <div id="alContenido"></div>`;
 
@@ -1377,6 +1380,53 @@ function renderAlumnos(main) {
     if (tabActivo === "ciclos") return renderCiclos(cont);
     if (tabActivo === "grupos") return renderGrupos(cont);
     if (tabActivo === "alumnos") return renderAlumnosTab(cont);
+    if (tabActivo === "periodos") return renderPeriodosEval(cont);
+  }
+
+  // ---------- Fechas de los periodos de evaluación (parciales / bimestres) ----------
+  async function renderPeriodosEval(cont) {
+    const puede = ["Administrador", "Director"].includes(state.perfil.rol);
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data: cs, error } = await sb.from("ciclos_escolares").select("id, nombre, nivel, activo, fecha_inicio").order("fecha_inicio", { ascending: false });
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    if (!cs || !cs.length) { cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">Primero crea un ciclo escolar.</p>`; return; }
+    cont.innerHTML = `
+      <div class="max-w-2xl">
+        <p class="text-xs mb-3" style="color:#6C7B8A">Define las fechas de inicio y fin de cada periodo. Con ellas, el sistema calcula solo la calificación del criterio de asistencia (entradas con rostro + lista del profesor) sin que cada catedrático capture fechas. ${puede ? "" : "Solo el Administrador o el Director pueden modificarlas."}</p>
+        <select id="peCiclo" class="w-full px-3 py-2 rounded-lg text-sm border mb-3" style="border-color:#E1DED5">${cs.map(c => `<option value="${c.id}" ${c.activo ? "selected" : ""}>${escHtml(c.nombre)}${c.nivel ? " — " + escHtml(c.nivel) : ""}</option>`).join("")}</select>
+        <div id="peCampos"></div><div id="peMsg" class="mt-2"></div>
+        ${puede ? `<button id="peGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar fechas</button>` : ""}
+      </div>`;
+    const $$ = id => document.getElementById(id);
+    let nombres = [];
+    async function pintar() {
+      const c = cs.find(x => x.id === $$("peCiclo").value);
+      const pref = c.nivel === "Preparatoria" ? "Bimestre" : "Parcial";
+      nombres = [1, 2, 3, 4, 5].map(n => `${pref} ${n}`);
+      const { data } = await sb.from("periodos_evaluacion").select("periodo, fecha_inicio, fecha_fin").eq("ciclo_escolar_id", c.id);
+      const m = new Map((data || []).map(r => [r.periodo, r]));
+      $$("peCampos").innerHTML = nombres.map((n, i) => `
+        <div class="flex items-center gap-2 mb-2"><span class="w-28 text-sm font-semibold" style="color:#1E3A8A">${n}</span>
+          <input id="peI${i}" type="date" value="${m.get(n)?.fecha_inicio || ""}" ${puede ? "" : "disabled"} class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" />
+          <span class="text-xs">a</span>
+          <input id="peF${i}" type="date" value="${m.get(n)?.fecha_fin || ""}" ${puede ? "" : "disabled"} class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>`).join("");
+    }
+    $$("peCiclo").addEventListener("change", pintar); pintar();
+    const g = $$("peGuardar");
+    if (g) g.addEventListener("click", async () => {
+      const filas = [];
+      for (let i = 0; i < nombres.length; i++) {
+        const a = $$("peI" + i).value, b = $$("peF" + i).value;
+        if (!a && !b) continue;
+        if (!a || !b || a > b) { $$("peMsg").innerHTML = errBox(`Revisa las fechas de ${nombres[i]}.`); return; }
+        filas.push({ ciclo_escolar_id: $$("peCiclo").value, periodo: nombres[i], fecha_inicio: a, fecha_fin: b, actualizado_por: state.perfil.id });
+      }
+      if (!filas.length) { $$("peMsg").innerHTML = errBox("Captura las fechas de al menos un periodo."); return; }
+      g.disabled = true;
+      const { error: e } = await sb.from("periodos_evaluacion").upsert(filas, { onConflict: "ciclo_escolar_id,periodo" });
+      g.disabled = false;
+      $$("peMsg").innerHTML = e ? errBox(escHtml(e.message)) : okBox("Fechas guardadas.");
+    });
   }
 
   // ---------- Ciclos Escolares ----------
@@ -1899,8 +1949,12 @@ let kioskSesion = 0;
 let wakeLockRef = null;
 let cachePersonalAcceso = null;
 
+// "Juan Bosco Preparatoria" siempre se muestra como "Preparatoria Juan Bosco" (también en mayúsculas).
+function corregirNombrePlantel(t) {
+  return String(t ?? "").replace(/juan\s+bosco\s+preparatoria/gi, m => m === m.toUpperCase() ? "PREPARATORIA JUAN BOSCO" : "Preparatoria Juan Bosco");
+}
 function escHtml(texto) {
-  return String(texto ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return corregirNombrePlantel(texto).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function normalizarTexto(s) {
   return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -2071,6 +2125,7 @@ function renderAccesos(main) {
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="registro">Registro</button>
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="consulta">Asistencia por día</button>
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="reporte">Reporte de ausencias</button>
+      <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="personal">Reporte de personal</button>
       <button class="acTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="rostros">Registrar rostros</button>
     </div>
     <div id="acContenido"></div>`;
@@ -2117,6 +2172,82 @@ function renderAccesos(main) {
     if (tabActivo === "consulta") return renderConsultaAsistencia(cont);
     if (tabActivo === "reporte") return renderReporteAusencias(cont);
     if (tabActivo === "rostros") return renderRegistrarRostros(cont);
+    if (tabActivo === "personal") return renderReportePersonal(cont);
+  }
+
+  // ---------- Reporte de entradas y salidas del personal (consulta, impresión y CSV) ----------
+  async function renderReportePersonal(cont) {
+    const $$ = id => document.getElementById(id);
+    let personal;
+    try { personal = await cargarPersonalAcceso(); } catch (e) { cont.innerHTML = errBox(escHtml(e.message)); return; }
+    const hoy = fechaLocalISO(), mes = hoy.slice(0, 8) + "01";
+    cont.innerHTML = `
+      <div class="max-w-3xl">
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div class="col-span-2"><label class="block text-xs" style="color:#6C7B8A">Personal</label>
+              <select id="rpPersona" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="*">Todo el personal</option><option value="PROF">Todos los catedráticos</option>
+                ${personal.slice().sort((a, b) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es")).map(p => `<option value="${p.id}">${escHtml(p.nombre_completo)}${p.rol ? " (" + escHtml(p.rol) + ")" : ""}</option>`).join("")}</select></div>
+            <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="rpDesde" type="date" value="${mes}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+            <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="rpHasta" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+            <div><label class="block text-xs" style="color:#6C7B8A">Marcar retardo si entra después de (opcional)</label><input id="rpLimite" type="time" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+          </div>
+          <button id="rpConsultar" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Consultar</button>
+        </div>
+        <div id="rpPersRes"></div>
+      </div>`;
+    $$("rpConsultar").addEventListener("click", async () => {
+      const res = $$("rpPersRes"), d = $$("rpDesde").value, h = $$("rpHasta").value, sel = $$("rpPersona").value, lim = $$("rpLimite").value;
+      if (!d || !h || d > h) { res.innerHTML = errBox("Revisa las fechas."); return; }
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
+      try {
+        const ini = new Date(d + "T00:00:00"), fin = new Date(new Date(h + "T00:00:00").getTime() + 86400000);
+        const regs = await colTraerTodo(() => {
+          let q = sb.from("registros_acceso").select("id, perfil_id, tipo_evento, fecha_hora, metodo").eq("tipo_persona", "Personal").gte("fecha_hora", ini.toISOString()).lt("fecha_hora", fin.toISOString()).order("fecha_hora").order("id");
+          if (sel !== "*" && sel !== "PROF") q = q.eq("perfil_id", sel);
+          return q;
+        });
+        const info = new Map(personal.map(p => [p.id, p]));
+        const dias = new Map();
+        regs.forEach(r => {
+          const p = info.get(r.perfil_id); if (!p) return;
+          if (sel === "PROF" && p.rol !== "Profesor") return;
+          const f = fechaLocalISO(new Date(r.fecha_hora)), k = r.perfil_id + "|" + f;
+          const x = dias.get(k) || { pid: r.perfil_id, fecha: f, entrada: null, salida: null };
+          if (r.tipo_evento === "Entrada" && !x.entrada) x.entrada = new Date(r.fecha_hora);
+          if (r.tipo_evento === "Salida") x.salida = new Date(r.fecha_hora);
+          dias.set(k, x);
+        });
+        const filas = [...dias.values()].sort((a, b) => (info.get(a.pid).nombre_completo || "").localeCompare(info.get(b.pid).nombre_completo || "", "es") || a.fecha.localeCompare(b.fecha));
+        if (!filas.length) { res.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay registros de entradas o salidas en ese periodo.</p>`; return; }
+        const permanencia = x => { if (!x.entrada || !x.salida || x.salida < x.entrada) return ""; const m = Math.round((x.salida - x.entrada) / 60000); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`; };
+        const obs = x => { const o = []; if (!x.entrada) o.push("Sin entrada"); if (!x.salida) o.push("Sin salida"); if (lim && x.entrada && (String(x.entrada.getHours()).padStart(2, "0") + ":" + String(x.entrada.getMinutes()).padStart(2, "0")) > lim) o.push("Retardo"); return o.join(", "); };
+        const resumen = new Map();
+        filas.forEach(x => { const r = resumen.get(x.pid) || { dias: 0, ret: 0, sinSal: 0 }; r.dias++; const o = obs(x); if (o.includes("Retardo")) r.ret++; if (o.includes("Sin salida")) r.sinSal++; resumen.set(x.pid, r); });
+        const titulo = sel === "*" ? "Todo el personal" : sel === "PROF" ? "Todos los catedráticos" : (info.get(sel)?.nombre_completo || "");
+        res.innerHTML = `
+          <div class="flex gap-2 mb-2 flex-wrap"><button id="rpImp" class="px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#1E3A8A; color:#fff">Imprimir / PDF</button>
+            <button id="rpCsv" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Descargar Excel (CSV)</button></div>
+          <div id="rpPersImp" class="ib-imprimible p-4 rounded-xl bg-white border" style="border-color:#E1DED5; color:#1C2B3A">
+            <p class="text-sm font-bold" style="color:#1E3A8A">Reporte de entradas y salidas del personal</p>
+            <p class="text-xs mb-3" style="color:#6C7B8A">${escHtml(titulo)} · del ${fechaLarga(d + "T00:00:00")} al ${fechaLarga(h + "T00:00:00")}${lim ? " · retardo después de las " + lim : ""}</p>
+            <p class="text-xs font-bold mb-1" style="color:#1E3A8A">Resumen</p>
+            <table class="w-full text-xs mb-3" style="border-collapse:collapse"><thead><tr style="background:#EEF2FB"><th class="text-left p-1.5" style="border:1px solid #D5DAE8">Nombre</th><th class="p-1.5" style="border:1px solid #D5DAE8">Días con registro</th><th class="p-1.5" style="border:1px solid #D5DAE8">Retardos</th><th class="p-1.5" style="border:1px solid #D5DAE8">Sin salida</th></tr></thead><tbody>
+              ${[...resumen.entries()].map(([pid, r]) => `<tr><td class="p-1.5" style="border:1px solid #D5DAE8">${escHtml(info.get(pid).nombre_completo)}</td><td class="p-1.5 text-center" style="border:1px solid #D5DAE8">${r.dias}</td><td class="p-1.5 text-center" style="border:1px solid #D5DAE8">${lim ? r.ret : "—"}</td><td class="p-1.5 text-center" style="border:1px solid #D5DAE8">${r.sinSal}</td></tr>`).join("")}</tbody></table>
+            <p class="text-xs font-bold mb-1" style="color:#1E3A8A">Detalle por día</p>
+            <table class="w-full text-xs" style="border-collapse:collapse"><thead><tr style="background:#EEF2FB"><th class="text-left p-1.5" style="border:1px solid #D5DAE8">Fecha</th><th class="text-left p-1.5" style="border:1px solid #D5DAE8">Nombre</th><th class="p-1.5" style="border:1px solid #D5DAE8">Entrada</th><th class="p-1.5" style="border:1px solid #D5DAE8">Salida</th><th class="p-1.5" style="border:1px solid #D5DAE8">Permanencia</th><th class="text-left p-1.5" style="border:1px solid #D5DAE8">Observación</th></tr></thead><tbody>
+              ${filas.map(x => `<tr><td class="p-1.5" style="border:1px solid #D5DAE8">${fechaLarga(x.fecha + "T00:00:00")}</td><td class="p-1.5" style="border:1px solid #D5DAE8">${escHtml(info.get(x.pid).nombre_completo)}</td><td class="p-1.5 text-center" style="border:1px solid #D5DAE8">${x.entrada ? horaCorta(x.entrada) : "—"}</td><td class="p-1.5 text-center" style="border:1px solid #D5DAE8">${x.salida ? horaCorta(x.salida) : "—"}</td><td class="p-1.5 text-center" style="border:1px solid #D5DAE8">${permanencia(x)}</td><td class="p-1.5" style="border:1px solid #D5DAE8; color:#B5453A">${obs(x)}</td></tr>`).join("")}</tbody></table>
+            <p class="text-xs mt-3" style="color:#6C7B8A">Generado el ${fechaLarga(new Date())}.</p>
+          </div>`;
+        $$("rpImp").addEventListener("click", () => imprimirSolo("rpPersImp"));
+        $$("rpCsv").addEventListener("click", () => {
+          const q = t => `"${String(t ?? "").replace(/"/g, '""')}"`;
+          const csv = ["Fecha,Nombre,Entrada,Salida,Permanencia,Observación", ...filas.map(x => [x.fecha, info.get(x.pid).nombre_completo, x.entrada ? horaCorta(x.entrada) : "", x.salida ? horaCorta(x.salida) : "", permanencia(x), obs(x)].map(q).join(","))].join("\r\n");
+          const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+          descargarUrl(url, `Personal_${d}_a_${h}.csv`); setTimeout(() => URL.revokeObjectURL(url), 4000);
+        });
+      } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
+    });
   }
 
   // ---------- Registro de entradas y salidas ----------
@@ -2816,7 +2947,7 @@ async function renderReporteAusencias(cont) {
         cont.innerHTML = `
           <div class="max-w-2xl">
             <p class="text-sm font-bold mb-1" style="color:#1E3A8A">Revisa las ausencias de hoy</p>
-            <p class="text-xs mb-3" style="color:#6C7B8A">${fechaLarga(hoy + "T00:00:00")}. Marca si cada ausencia es justificada o no. Las justificadas no afectan la calificación del criterio de asistencia. Las demás cuentan como inasistencia aunque el profesor haya marcado asistencia.</p>
+            <p class="text-xs mb-3" style="color:#6C7B8A">${fechaLarga(hoy + "T00:00:00")}. ${state.perfil.rol === "Secretaria" ? "Solo Dirección o Administración pueden justificar faltas (sección Justificar faltas)." : "Marca si cada ausencia es justificada o no."} Las justificadas no afectan la calificación del criterio de asistencia. Las demás cuentan como inasistencia aunque el profesor haya marcado asistencia.</p>
             ${grupos.map(g => {
               const aus = ausentesTodos.filter(f => f.grupo_id === g.id);
               if (!aus.length) return "";
@@ -2824,8 +2955,8 @@ async function renderReporteAusencias(cont) {
                 <p class="text-sm font-bold mb-2" style="color:#1E3A8A">${escHtml(g.etiqueta)}</p>
                 ${aus.map(f => `<div class="flex items-center gap-2 py-1.5 flex-wrap" style="border-top:1px solid #F0EDE5">
                   <span class="flex-1 text-sm min-w-40">${escHtml(f.nombre)}</span>
-                  <select class="rvJust px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>
-                  <input class="rvMotivo px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" placeholder="Motivo (opcional)" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
+                  <select class="rvJust px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" ${state.perfil.rol === "Secretaria" ? "disabled" : ""} style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>
+                  <input class="rvMotivo px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" ${state.perfil.rol === "Secretaria" ? "disabled" : ""} placeholder="Motivo (opcional)" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
                 </div>`).join("")}
               </div>`;
             }).join("")}
@@ -2838,7 +2969,7 @@ async function renderReporteAusencias(cont) {
           try {
             const motivos = {};
             cont.querySelectorAll(".rvMotivo").forEach(i => { motivos[i.dataset.id] = i.value.trim() || null; });
-            await guardarAusenciasDia([...cont.querySelectorAll(".rvJust")].map(sel => ({ alumno_id: sel.dataset.id, fecha: hoy, justificada: sel.value === "1", motivo: sel.value === "1" ? motivos[sel.dataset.id] : null })));
+            await guardarAusenciasDia([...cont.querySelectorAll(".rvJust")].filter(sel => state.perfil.rol !== "Secretaria" || !ausMap.get(sel.dataset.id)?.justificada).map(sel => ({ alumno_id: sel.dataset.id, fecha: hoy, justificada: sel.value === "1", motivo: sel.value === "1" ? motivos[sel.dataset.id] : null })));
             revisado = true;
             generar();
           } catch (e) { btn.disabled = false; document.getElementById("rvMsg").innerHTML = errBox(escHtml(e.message)); }
@@ -2900,7 +3031,7 @@ async function renderReporteAusencias(cont) {
 function reglamentoPorDefecto(nivel) {
   const alumnoTxt = nivel === "Preparatoria" ? "estudiantes de Preparatoria" : "alumnos de Secundaria";
   return `## I. Disposiciones generales
-El presente reglamento tiene por objeto regular la convivencia, el orden y el buen funcionamiento de Juan Bosco ${nivel || ""}. Es de observancia obligatoria para todos los ${alumnoTxt} y para sus padres, madres o tutores desde el momento de la inscripción.
+El presente reglamento tiene por objeto regular la convivencia, el orden y el buen funcionamiento de ${nivel === "Preparatoria" ? "Preparatoria Juan Bosco" : "Juan Bosco " + (nivel || "")}. Es de observancia obligatoria para todos los ${alumnoTxt} y para sus padres, madres o tutores desde el momento de la inscripción.
 La inscripción implica el conocimiento y la aceptación de este reglamento. La Dirección podrá actualizarlo y lo dará a conocer oportunamente a los padres de familia.
 
 ## II. Asistencia y puntualidad
@@ -3402,7 +3533,7 @@ async function renderAvisoPrivacidad(main) {
           <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Aviso a mostrar</label>
           <select id="avTipoSel" class="w-full px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
             <option value="Secundaria" ${docTipo === "Secundaria" ? "selected" : ""}>Alumnos de Secundaria (Juan Bosco Secundaria)</option>
-            <option value="Preparatoria" ${docTipo === "Preparatoria" ? "selected" : ""}>Alumnos de Preparatoria (Juan Bosco Preparatoria)</option>
+            <option value="Preparatoria" ${docTipo === "Preparatoria" ? "selected" : ""}>Alumnos de Preparatoria (Preparatoria Juan Bosco)</option>
             <option value="Docentes" ${esDoc ? "selected" : ""}>Docentes (general, ambos niveles)</option>
           </select>
           ${esDoc ? `<label class="block text-xs font-semibold mt-3 mb-1" style="color:#6C7B8A">Docente (opcional: si no eliges, el nombre queda en blanco para llenarlo a mano)</label>
@@ -3717,7 +3848,7 @@ function renderColegiaturas(main) {
 
   // ======================= COBRANZA =======================
   async function tabCobranza(cont) {
-    cont.innerHTML = `<div id="coSelAl"></div><div id="coCuenta"></div>`;
+    cont.innerHTML = `<p class="text-xs mb-2" style="color:#6C7B8A">Busca al alumno para ver su estado de cuenta. Ahí mismo, con el botón <strong>+ Agregar concepto (uniformes, libros, otros…)</strong>, puedes cargarle otros conceptos. El catálogo de conceptos y precios se administra en la pestaña <strong>Tarifas</strong>.</p><div id="coSelAl"></div><div id="coCuenta"></div>`;
     selectorAlumno($("coSelAl"), cargarCuenta);
   }
 
@@ -3731,6 +3862,8 @@ function renderColegiaturas(main) {
     if (!lista.length) { caja.innerHTML = errBox("Este alumno no tiene inscripción a ningún ciclo."); return; }
     const insc = lista.find(i => i.ciclo_escolar_id === cicloIdElegido) || lista[0];
     const ciclo = insc.ciclos_escolares;
+    // Aplica los recargos que correspondan (cargos vencidos sin pagar) antes de mostrar el estado de cuenta.
+    try { const rr = await sb.rpc("aplicar_recargos", { p_alumno: alumno.id }); if (rr && rr.error) await sb.rpc("aplicar_recargos"); } catch (e) { /* si la función aún no está actualizada, se ignora */ }
 
     const [cargosRes, planRes, exs, tarifas, membrete, tutRes] = await Promise.all([
       sb.from("cargos_saldo").select("*").eq("alumno_id", alumno.id).eq("ciclo_escolar_id", ciclo.id).eq("cancelado", false).order("orden").order("fecha_vencimiento"),
@@ -3798,7 +3931,7 @@ function renderColegiaturas(main) {
       </div>
       <div id="coAcciones" class="flex gap-2 flex-wrap mb-3">
         ${cargos.length ? `<button id="coImprimirEdo" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Imprimir estado de cuenta</button>` : ""}
-        <button id="coAddCargo" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Agregar otro cargo</button>
+        <button id="coAddCargo" class="px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#1E3A8A; color:#fff">+ Agregar concepto (uniformes, libros, otros…)</button>
         ${cargos.length && exAplica.length ? `<button id="coReexentar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#F4F1EB; color:#1E3A8A">Aplicar exenciones a cargos sin pagos</button>` : ""}
       </div>
       <div id="coForm"></div>
@@ -3863,21 +3996,44 @@ function renderColegiaturas(main) {
       recargar();
     });
 
-    $("coAddCargo").addEventListener("click", () => {
+    $("coAddCargo").addEventListener("click", async () => {
+      $("coForm").innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando conceptos…</p>`;
+      let catalogo = [];
+      try { const r = await sb.from("conceptos_pago").select("id, nombre, precio").eq("activo", true).order("nombre"); catalogo = r.data || []; } catch (e) { /* catálogo aún no creado */ }
       $("coForm").innerHTML = `
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Agregar otro cargo (uniforme, papelería, extemporáneo…)</p>
+          <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Agregar concepto de pago</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">Elige un concepto del catálogo (se administra en la pestaña Tarifas) o escribe uno distinto. No genera recargo por atraso.</p>
           <div class="grid grid-cols-3 gap-2 mb-2">
-            <input id="cgDesc" placeholder="Descripción" class="col-span-3 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
-            <input id="cgMonto" type="number" min="0" step="0.01" placeholder="Monto" class="px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
-            <input id="cgVenc" type="date" value="${hoy}" class="col-span-2 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+            <select id="cgConcepto" class="col-span-3 px-3 py-2 rounded-lg text-sm border" style="border-color:#E1DED5">
+              ${catalogo.map(c => `<option value="${c.id}">${escHtml(c.nombre)}${Number(c.precio) > 0 ? " — " + mxn(c.precio) : ""}</option>`).join("")}
+              <option value="">Otro (escribir descripción)</option>
+            </select>
+            <input id="cgDesc" placeholder="Descripción del concepto" class="col-span-3 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5; ${catalogo.length ? "display:none" : ""}" />
+            <div><label class="block text-xs" style="color:#6C7B8A">Cantidad</label><input id="cgCant" type="number" min="1" step="1" value="1" class="w-full px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" /></div>
+            <div><label class="block text-xs" style="color:#6C7B8A">Monto total</label><input id="cgMonto" type="number" min="0" step="0.01" placeholder="Monto" class="w-full px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" /></div>
+            <div><label class="block text-xs" style="color:#6C7B8A">Vence</label><input id="cgVenc" type="date" value="${hoy}" class="w-full px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" /></div>
+            <input id="cgNota" placeholder="Nota (talla, título del libro…)" class="col-span-3 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
           </div>
           <div id="cgMsg"></div>
           <button id="cgOk" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar cargo</button>
         </div>`;
+      const sel = $("cgConcepto");
+      const actualizar = () => {
+        const c = catalogo.find(x => x.id === sel.value);
+        $("cgDesc").style.display = c ? "none" : "";
+        if (c && Number(c.precio) > 0) $("cgMonto").value = (Number(c.precio) * (Number($("cgCant").value) || 1)).toFixed(2);
+      };
+      sel.addEventListener("change", actualizar); $("cgCant").addEventListener("input", actualizar); actualizar();
+      $("coForm").scrollIntoView({ behavior: "smooth" });
       $("cgOk").addEventListener("click", async () => {
-        const desc = $("cgDesc").value.trim(), monto = Number($("cgMonto").value), venc = $("cgVenc").value;
-        if (!desc || !(monto > 0) || !venc) { $("cgMsg").innerHTML = errBox("Captura descripción, monto y fecha."); return; }
+        const c = catalogo.find(x => x.id === sel.value);
+        const cant = Math.max(1, Math.floor(Number($("cgCant").value) || 1));
+        const base = c ? c.nombre : $("cgDesc").value.trim();
+        const nota = $("cgNota").value.trim();
+        const desc = `${base}${cant > 1 ? " (x" + cant + ")" : ""}${nota ? " — " + nota : ""}`;
+        const monto = Number($("cgMonto").value), venc = $("cgVenc").value;
+        if (!base || !(monto > 0) || !venc) { $("cgMsg").innerHTML = errBox("Captura el concepto, el monto y la fecha."); return; }
         $("cgOk").disabled = true;
         const { error: e } = await sb.from("cargos").insert({ alumno_id: alumno.id, ciclo_escolar_id: ciclo.id, concepto: "Otro", descripcion: desc, orden: 90, fecha_vencimiento: venc, monto_original: monto, descuento: 0, monto });
         if (e) { $("cgOk").disabled = false; $("cgMsg").innerHTML = errBox(escHtml(e.message)); return; }
@@ -4169,6 +4325,36 @@ function renderColegiaturas(main) {
         <div id="tfMsg" class="mt-2"></div>
         ${puedeCostos ? `<button id="tfGuardar" class="mt-2 px-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Guardar tarifas</button>` : ""}
       </div>`;
+    cont.insertAdjacentHTML("beforeend", `<div id="tfConceptos" class="p-4 rounded-xl bg-white border mt-3" style="border-color:#E1DED5"></div>`);
+    async function pintarConceptos() {
+      const caja = $("tfConceptos");
+      const { data, error } = await sb.from("conceptos_pago").select("*").order("nombre");
+      if (error) { caja.innerHTML = `<p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Otros conceptos (uniformes, libros…)</p>${errBox("Falta crear la tabla de conceptos (ejecuta el SQL indicado).")}`; return; }
+      const lista = data || [];
+      caja.innerHTML = `
+        <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Otros conceptos (uniformes, libros, material…)</p>
+        <p class="text-xs mb-2" style="color:#6C7B8A">Catálogo de conceptos que se pueden agregar al estado de cuenta de un alumno desde Cobranza. El precio es solo una sugerencia que puedes cambiar al cobrar.</p>
+        ${lista.length === 0 ? `<p class="text-xs mb-2" style="color:#6C7B8A">Aún no hay conceptos.</p>` : lista.map(c => `
+          <div class="flex items-center gap-2 py-1.5" style="border-top:1px solid #F0EDE5; ${c.activo ? "" : "opacity:.55"}">
+            <span class="flex-1 text-sm">${escHtml(c.nombre)}${c.activo ? "" : " (inactivo)"}</span>
+            <input type="number" min="0" step="0.01" value="${Number(c.precio) || ""}" data-id="${c.id}" ${puedeCostos ? "" : "disabled"} class="cpPrecio w-28 px-2 py-1 rounded-lg text-sm border text-right" style="border-color:#E1DED5" placeholder="$ 0.00" />
+            ${puedeCostos ? `<button class="cpAct px-2 py-1 rounded-lg text-xs font-semibold" data-id="${c.id}" data-act="${c.activo ? 0 : 1}" style="background:#F4F1EB; color:#1E3A8A">${c.activo ? "Desactivar" : "Activar"}</button>` : ""}
+          </div>`).join("")}
+        ${puedeCostos ? `<div class="flex gap-2 mt-2"><input id="cpNombre" placeholder="Nuevo concepto (ej. Uniforme deportivo)" class="flex-1 px-3 py-2 rounded-lg text-sm border outline-none" style="border-color:#E1DED5" />
+          <input id="cpPrecioN" type="number" min="0" step="0.01" placeholder="Precio" class="w-28 px-2 py-2 rounded-lg text-sm border text-right" style="border-color:#E1DED5" />
+          <button id="cpAgregar" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button></div><div id="cpMsg" class="mt-2"></div>` : ""}`;
+      if (!puedeCostos) return;
+      caja.querySelectorAll(".cpPrecio").forEach(i => i.addEventListener("change", async () => { await sb.from("conceptos_pago").update({ precio: Number(i.value) || 0 }).eq("id", i.dataset.id); }));
+      caja.querySelectorAll(".cpAct").forEach(b => b.addEventListener("click", async () => { await sb.from("conceptos_pago").update({ activo: b.dataset.act === "1" }).eq("id", b.dataset.id); pintarConceptos(); }));
+      $("cpAgregar").addEventListener("click", async () => {
+        const nombre = $("cpNombre").value.trim();
+        if (!nombre) { $("cpMsg").innerHTML = errBox("Escribe el nombre del concepto."); return; }
+        const { error: e } = await sb.from("conceptos_pago").insert({ nombre, precio: Number($("cpPrecioN").value) || 0, creado_por: state.perfil.id });
+        if (e) { $("cpMsg").innerHTML = errBox(escHtml(e.message.includes("duplicate") ? "Ese concepto ya existe." : e.message)); return; }
+        pintarConceptos();
+      });
+    }
+    pintarConceptos();
     async function pintar() {
       const t = await tarifasDeCiclo($("tfCiclo").value);
       $("tfCampos").innerHTML = COL_CONCEPTOS.map((c, i) => `
@@ -4574,17 +4760,19 @@ function renderCalificaciones(main) {
         });
 
         const btnAsis = document.getElementById("calAsisBtn");
-        if (btnAsis) btnAsis.addEventListener("click", () => {
+        if (btnAsis) btnAsis.addEventListener("click", async () => {
           const crit = criteriosPeriodo.find(c => normalizarTexto(c.nombre).includes("asistencia"));
           const panel = document.getElementById("calAsisPanel");
           const hoyISO = fechaLocalISO(new Date());
           const ini = new Date(); ini.setDate(ini.getDate() - 30);
+          let per = null;
+          try { const r = await sb.from("periodos_evaluacion").select("fecha_inicio, fecha_fin").eq("ciclo_escolar_id", asignacion.ciclo_escolar_id).eq("periodo", periodoActivo).maybeSingle(); per = r.data; } catch (e) { /* sin fechas definidas */ }
           panel.innerHTML = `
             <div class="p-3 rounded-lg" style="background:#F4F1EB">
-              <p class="text-xs mb-2" style="color:#1C2B3A">Elige las fechas que abarca <strong>${escHtml(periodoActivo)}</strong>. La calificación será <strong>10 × asistencias ÷ clases impartidas</strong> en ese rango. Las ausencias justificadas no cuentan; si el alumno no pasó por la entrada de la escuela ese día, cuenta como inasistencia aunque el profesor lo haya marcado presente.</p>
+              <p class="text-xs mb-2" style="color:#1C2B3A">${per ? `Fechas de <strong>${escHtml(periodoActivo)}</strong> definidas por la Dirección.` : `Elige las fechas que abarca <strong>${escHtml(periodoActivo)}</strong> (la Dirección aún no las define en Alumnos y Grupos → Periodos de evaluación).`} La calificación será <strong>10 × asistencias ÷ clases impartidas</strong> en ese rango. Las ausencias justificadas no cuentan; si el alumno no pasó por la entrada de la escuela ese día, cuenta como inasistencia aunque el profesor lo haya marcado presente.</p>
               <div class="flex gap-2 flex-wrap items-end mb-2">
-                <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="asDesde" type="date" value="${fechaLocalISO(ini)}" class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5" /></div>
-                <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="asHasta" type="date" value="${hoyISO}" class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5" /></div>
+                <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="asDesde" type="date" value="${per ? per.fecha_inicio : fechaLocalISO(ini)}" ${per ? "readonly" : ""} class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5" /></div>
+                <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="asHasta" type="date" value="${per ? per.fecha_fin : hoyISO}" ${per ? "readonly" : ""} class="px-2 py-1 rounded-lg text-xs border" style="border-color:#E1DED5" /></div>
                 <button id="asCalcular" type="button" class="px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#1E3A8A; color:#fff">Calcular</button>
               </div>
               <div id="asResultado"></div>
@@ -4614,6 +4802,7 @@ function renderCalificaciones(main) {
               });
             } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
           });
+          if (per) document.getElementById("asCalcular").click(); // con fechas definidas por la Dirección, calcula de inmediato
         });
 
         const btnGuardar = document.getElementById("calGuardarBtn");
@@ -4926,8 +5115,8 @@ function abrirWhatsApp(tel, texto) {
   window.open(`https://wa.me/${n}?text=${encodeURIComponent(texto)}`, "_blank");
   return true;
 }
-const PLANTEL_NOMBRE = { Secundaria: "Juan Bosco Secundaria", Preparatoria: "Juan Bosco Preparatoria" };
-// Con nivel: "Juan Bosco Secundaria" / "Juan Bosco Preparatoria". Sin nivel: nombre general (solo docentes y avisos a todos).
+const PLANTEL_NOMBRE = { Secundaria: "Juan Bosco Secundaria", Preparatoria: "Preparatoria Juan Bosco" };
+// Con nivel: "Juan Bosco Secundaria" / "Preparatoria Juan Bosco". Sin nivel: nombre general (solo docentes y avisos a todos).
 async function cargarMembrete(nivel) {
   const { data } = await sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad, telefono, director_nombre, director_secundaria, director_preparatoria").eq("id", 1).maybeSingle();
   const d = data || {};
@@ -5809,6 +5998,150 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
       <div class="flex justify-around mt-8 mb-6">${firmaOficio("Padre, madre o tutor", t?.nombre_completo || "")}${firmaOficio(director || "Director(a)", director ? "Director(a)" : "")}</div></div>`;
   }
   return "";
+}
+
+// ============================================================
+// Justificar faltas de alumnos (solo Administrador y Director)
+// ============================================================
+function renderJustificar(main) {
+  let tab = "dia";
+  const $ = id => document.getElementById(id);
+  main.innerHTML = `
+    <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Justificar faltas</h2>
+    <div class="flex gap-1 mb-4 flex-wrap">
+      <button class="jfTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="dia">Por día</button>
+      <button class="jfTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="rango">Varios días de un alumno</button>
+      <button class="jfTab px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="historial">Historial</button>
+    </div>
+    <div id="jfCont" class="max-w-3xl"></div>`;
+  const pintarTabs = () => document.querySelectorAll(".jfTab").forEach(b => { const a = b.dataset.tab === tab; b.style.background = a ? "#1E3A8A" : "#F4F1EB"; b.style.color = a ? "#fff" : "#1E3A8A"; });
+  document.querySelectorAll(".jfTab").forEach(b => b.addEventListener("click", () => { if (!confirmarSalidaSinGuardar()) return; tab = b.dataset.tab; pintarTabs(); cargar(); }));
+  pintarTabs(); cargar();
+  function cargar() { const c = $("jfCont"); if (tab === "dia") tabDia(c); else if (tab === "rango") tabRango(c); else tabHistorial(c); }
+  const dias = (d, h) => { const r = []; for (let x = new Date(d + "T00:00:00"); x <= new Date(h + "T00:00:00"); x.setDate(x.getDate() + 1)) if (x.getDay() !== 0 && x.getDay() !== 6) r.push(fechaLocalISO(x)); return r; };
+
+  async function tabDia(cont) {
+    let grupos;
+    try { grupos = await cargarGruposActivos(); } catch (e) { cont.innerHTML = errBox(escHtml(e.message)); return; }
+    const hoy = fechaLocalISO();
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Muestra a los alumnos que no registraron entrada en la fecha elegida. Marca cuáles faltas son justificadas; esas no afectan la calificación del criterio de asistencia.</p>
+      <div class="p-4 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap items-end" style="border-color:#E1DED5">
+        <div><label class="block text-xs" style="color:#6C7B8A">Fecha</label><input id="jfFecha" type="date" value="${hoy}" max="${hoy}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        <div class="flex-1 min-w-40"><label class="block text-xs" style="color:#6C7B8A">Grupo</label><select id="jfGrupo" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos los grupos</option>${grupos.map(g => `<option value="${g.id}">${escHtml(g.etiqueta)}</option>`).join("")}</select></div>
+        <button id="jfBuscar" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Ver ausentes</button>
+      </div>
+      <div id="jfRes"></div>`;
+    $("jfBuscar").addEventListener("click", async () => {
+      const fecha = $("jfFecha").value, gid = $("jfGrupo").value, res = $("jfRes");
+      if (!fecha) { res.innerHTML = errBox("Elige la fecha."); return; }
+      res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
+      try {
+        const gs = gid ? grupos.filter(g => g.id === gid) : grupos;
+        const filas = await asistenciaDelDia(gs.map(g => g.id), fecha);
+        if (filas.length && filas.every(f => !f.entrada)) res.innerHTML = `<p class="text-xs mb-2" style="color:#B7791F">Nadie registró entrada en esta fecha (¿fue día sin clases?). No se justifica en bloque un día sin actividad.</p>`;
+        const ausentes = filas.filter(f => !f.entrada);
+        if (filas.length && ausentes.length === filas.length) return;
+        if (!ausentes.length) { res.innerHTML = `<p class="text-sm" style="color:#3F7A5E">No hay alumnos ausentes en esa fecha.</p>`; return; }
+        let ausMap = new Map();
+        try { ausMap = await cargarAusenciasDia(ausentes.map(f => f.alumno.id), fecha); } catch (e) { /* tabla aún sin datos */ }
+        res.innerHTML = gs.map(g => {
+          const aus = ausentes.filter(f => f.grupo_id === g.id); if (!aus.length) return "";
+          return `<div class="p-3 rounded-xl bg-white border mb-3" style="border-color:#E1DED5"><p class="text-sm font-bold mb-2" style="color:#1E3A8A">${escHtml(g.etiqueta)}</p>
+            ${aus.map(f => `<div class="flex items-center gap-2 py-1.5 flex-wrap" style="border-top:1px solid #F0EDE5">
+              <span class="flex-1 text-sm min-w-40">${escHtml(f.nombre)}</span>
+              <select class="jfJust px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" style="border-color:#E1DED5"><option value="0">Injustificada</option><option value="1" ${ausMap.get(f.alumno.id)?.justificada ? "selected" : ""}>Justificada</option></select>
+              <input class="jfMot px-2 py-1 rounded-lg text-xs border" data-id="${f.alumno.id}" placeholder="Motivo" value="${escHtml(ausMap.get(f.alumno.id)?.motivo || "")}" style="border-color:#E1DED5" />
+            </div>`).join("")}</div>`;
+        }).join("") + `<div id="jfMsg"></div><button id="jfGuardar" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Guardar</button>`;
+        $("jfGuardar").addEventListener("click", async () => {
+          const btn = $("jfGuardar"); btn.disabled = true;
+          const mot = {}; res.querySelectorAll(".jfMot").forEach(i => { mot[i.dataset.id] = i.value.trim(); });
+          const faltaMotivo = [...res.querySelectorAll(".jfJust")].some(sel => sel.value === "1" && !mot[sel.dataset.id]);
+          if (faltaMotivo) { btn.disabled = false; $("jfMsg").innerHTML = errBox("Escribe el motivo de cada falta justificada."); return; }
+          try {
+            await guardarAusenciasDia([...res.querySelectorAll(".jfJust")].map(sel => ({ alumno_id: sel.dataset.id, fecha, justificada: sel.value === "1", motivo: sel.value === "1" ? mot[sel.dataset.id] : null })));
+            $("jfMsg").innerHTML = okBox("Justificaciones guardadas."); btn.disabled = false;
+          } catch (e) { btn.disabled = false; $("jfMsg").innerHTML = errBox(escHtml(e.message)); }
+        });
+      } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
+    });
+  }
+
+  function tabRango(cont) {
+    let alumno = null;
+    const hoy = fechaLocalISO();
+    cont.innerHTML = `
+      <p class="text-xs mb-3" style="color:#6C7B8A">Para incapacidades o permisos de varios días: se justifican de lunes a viernes dentro del rango.</p>
+      <div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">
+        <input id="jrBuscar" placeholder="Buscar alumno por nombre o matrícula" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
+        <div id="jrRes"></div>
+        <div id="jrSel" class="text-sm font-semibold mb-2" style="color:#1E3A8A"></div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="jrDesde" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+          <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="jrHasta" type="date" value="${hoy}" class="w-full px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        </div>
+        <input id="jrMotivo" placeholder="Motivo (obligatorio)" class="w-full px-3 py-2 rounded-lg text-sm border outline-none mb-2" style="border-color:#E1DED5" />
+        <div id="jrMsg"></div>
+        <button id="jrOk" class="px-4 py-2 rounded-lg text-sm font-bold" style="background:#3F7A5E; color:#fff">Justificar días</button>
+      </div>`;
+    let t = null;
+    $("jrBuscar").addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        const q = $("jrBuscar").value.trim().replace(/[,%()]/g, " ");
+        if (q.length < 2) { $("jrRes").innerHTML = ""; return; }
+        const { data } = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno, matricula").or(`nombres.ilike.%${q}%,apellido_paterno.ilike.%${q}%,apellido_materno.ilike.%${q}%,matricula.ilike.%${q}%`).limit(8);
+        $("jrRes").innerHTML = (data || []).map((a, i) => `<button class="jrPick w-full text-left px-3 py-2 rounded-lg text-sm bg-white border mb-1" data-i="${i}" style="border-color:#E1DED5; color:#1E3A8A">${escHtml(nombreCompletoAlumno(a))} <span class="text-xs" style="color:#6C7B8A">(${escHtml(a.matricula || "")})</span></button>`).join("");
+        $("jrRes").querySelectorAll(".jrPick").forEach(b => b.addEventListener("click", () => { alumno = data[Number(b.dataset.i)]; $("jrSel").textContent = "Alumno: " + nombreCompletoAlumno(alumno); $("jrRes").innerHTML = ""; }));
+      }, 300);
+    });
+    $("jrOk").addEventListener("click", async () => {
+      const d = $("jrDesde").value, h = $("jrHasta").value, mot = $("jrMotivo").value.trim();
+      if (!alumno) { $("jrMsg").innerHTML = errBox("Selecciona al alumno."); return; }
+      if (!d || !h || d > h) { $("jrMsg").innerHTML = errBox("Revisa las fechas."); return; }
+      if (!mot) { $("jrMsg").innerHTML = errBox("Escribe el motivo."); return; }
+      const lista = dias(d, h);
+      if (!lista.length) { $("jrMsg").innerHTML = errBox("En ese rango no hay días de lunes a viernes."); return; }
+      if (lista.length > 60) { $("jrMsg").innerHTML = errBox("El rango no puede pasar de 60 días hábiles."); return; }
+      if (!confirm(`¿Justificar ${lista.length} día(s) de ${nombreCompletoAlumno(alumno)}?`)) return;
+      $("jrOk").disabled = true;
+      try { await guardarAusenciasDia(lista.map(f => ({ alumno_id: alumno.id, fecha: f, justificada: true, motivo: mot }))); $("jrMsg").innerHTML = okBox(`Listo: ${lista.length} día(s) justificado(s).`); }
+      catch (e) { $("jrMsg").innerHTML = errBox(escHtml(e.message)); }
+      $("jrOk").disabled = false;
+    });
+  }
+
+  async function tabHistorial(cont) {
+    const hoy = fechaLocalISO(), ini = new Date(); ini.setDate(ini.getDate() - 30);
+    cont.innerHTML = `
+      <div class="p-4 rounded-xl bg-white border mb-3 flex gap-2 flex-wrap items-end" style="border-color:#E1DED5">
+        <div><label class="block text-xs" style="color:#6C7B8A">Desde</label><input id="jhDesde" type="date" value="${fechaLocalISO(ini)}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        <div><label class="block text-xs" style="color:#6C7B8A">Hasta</label><input id="jhHasta" type="date" value="${hoy}" class="px-2 py-1.5 rounded-lg text-sm border" style="border-color:#E1DED5" /></div>
+        <button id="jhVer" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Consultar</button>
+      </div><div id="jhRes"></div>`;
+    async function ver() {
+      const res = $("jhRes"); res.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Consultando…</p>`;
+      const r = await sb.from("ausencias_dia").select("alumno_id, fecha, motivo").eq("justificada", true).gte("fecha", $("jhDesde").value).lte("fecha", $("jhHasta").value).order("fecha", { ascending: false }).limit(500);
+      if (r.error) { res.innerHTML = errBox(escHtml(r.error.message)); return; }
+      const filas = r.data || [];
+      if (!filas.length) { res.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay faltas justificadas en ese periodo.</p>`; return; }
+      const ids = [...new Set(filas.map(f => f.alumno_id))], nombres = new Map();
+      for (let i = 0; i < ids.length; i += 100) { const a = await sb.from("alumnos").select("id, nombres, apellido_paterno, apellido_materno").in("id", ids.slice(i, i + 100)); (a.data || []).forEach(x => nombres.set(x.id, nombreCompletoAlumno(x))); }
+      res.innerHTML = `<p class="text-xs mb-2" style="color:#6C7B8A">${filas.length} falta(s) justificada(s).</p>` + filas.map((f, i) => `
+        <div class="flex items-center gap-2 py-2 flex-wrap" style="border-top:1px solid #F0EDE5">
+          <span class="text-xs" style="width:90px; color:#6C7B8A">${fechaLarga(f.fecha + "T00:00:00")}</span>
+          <span class="flex-1 text-sm min-w-40">${escHtml(nombres.get(f.alumno_id) || "Alumno")}<br><span class="text-xs" style="color:#6C7B8A">${escHtml(f.motivo || "")}</span></span>
+          <button class="jhQuitar px-2 py-1 rounded-lg text-xs font-semibold" data-i="${i}" style="background:#FBEAE8; color:#B5453A">Quitar justificación</button>
+        </div>`).join("");
+      res.querySelectorAll(".jhQuitar").forEach(b => b.addEventListener("click", async () => {
+        const f = filas[Number(b.dataset.i)];
+        if (!confirm("¿Quitar la justificación? La falta volverá a contar como inasistencia.")) return;
+        try { await guardarAusenciasDia([{ alumno_id: f.alumno_id, fecha: f.fecha, justificada: false, motivo: null }]); ver(); } catch (e) { res.insertAdjacentHTML("afterbegin", errBox(escHtml(e.message))); }
+      }));
+    }
+    $("jhVer").addEventListener("click", ver); ver();
+  }
 }
 
 // ============================================================
