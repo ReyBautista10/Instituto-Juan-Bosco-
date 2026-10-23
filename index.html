@@ -616,7 +616,8 @@ async function cargarCalInfo() {
     let pend = 0;
     if (rol !== "Profesor") {
       const r2 = await sb.from("solicitudes_criterios").select("id", { count: "exact", head: true }).eq("estado", "Pendiente");
-      pend = r2.count || 0;
+      const r3 = await sb.from("solicitudes_calificaciones").select("id", { count: "exact", head: true }).eq("estado", "Pendiente");
+      pend = (r2.count || 0) + (r3.count || 0);
     }
     const nuevo = { propias: r1.count || 0, pend };
     const ant = state.calInfo;
@@ -4741,16 +4742,21 @@ function renderCalificaciones(main) {
 
   async function cargarSolicitudes() {
     const caja = document.getElementById("calSolicitudes");
-    const { data, error } = await sb.from("solicitudes_criterios")
+    let { data, error } = await sb.from("solicitudes_criterios")
       .select("id, asignacion_id, periodo, motivo, creado_en, solicitado_por, profesor_materias_grupos(materias(nombre), grupos(letra, grados(nombre)))")
       .eq("estado", "Pendiente").order("creado_en");
-    nSolic = data ? data.length : 0;
-    if (error || !data || data.length === 0) { caja.innerHTML = ""; return; }
+    if (error || !data) data = [];
+    const rc = await sb.from("solicitudes_calificaciones")
+      .select("id, asignacion_id, periodo, alumno_id, motivo, creado_en, solicitado_por, alumnos(nombres, apellido_paterno, apellido_materno), profesor_materias_grupos(materias(nombre), grupos(letra, grados(nombre)))")
+      .eq("estado", "Pendiente").order("creado_en");
+    const dataC = rc.data || [];
+    nSolic = data.length + dataC.length;
+    if (nSolic === 0) { caja.innerHTML = ""; return; }
     const { data: perfs } = await sb.rpc("personal_para_acceso");
     const nombres = new Map((perfs || []).map(p => [p.id, p.nombre_completo]));
-    caja.innerHTML = `
+    caja.innerHTML = (data.length ? `
       <div class="p-4 rounded-xl border mb-4" style="background:#FFF8E6; border-color:#E8D49A">
-        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Solicitudes para modificar criterios o calificaciones (${data.length})</p>
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Solicitudes para modificar criterios (${data.length})</p>
         ${data.map(s => {
           const a = s.profesor_materias_grupos;
           const clase = a && a.materias && a.grupos ? `${a.materias.nombre} — ${a.grupos.grados?.nombre || ""} "${a.grupos.letra}"` : "Clase";
@@ -4762,11 +4768,37 @@ function renderCalificaciones(main) {
           </div>`;
         }).join("")}
         <div id="solMsg"></div>
-      </div>`;
+      </div>` : "") + (dataC.length ? `
+      <div class="p-4 rounded-xl border mb-4" style="background:#FFF8E6; border-color:#E8D49A">
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Solicitudes para modificar calificaciones de alumnos (${dataC.length})</p>
+        ${dataC.map(s => {
+          const a = s.profesor_materias_grupos, al = s.alumnos;
+          const clase = a && a.materias && a.grupos ? `${a.materias.nombre} — ${a.grupos.grados?.nombre || ""} "${a.grupos.letra}"` : "Clase";
+          const alum = al ? `${al.apellido_paterno || ""} ${al.apellido_materno || ""} ${al.nombres || ""}`.replace(/\s+/g, " ").trim() : "Alumno";
+          return `<div class="py-2 border-t" style="border-color:#E8D49A; color:#1C2B3A">
+            <p class="text-sm"><strong>${escHtml(nombres.get(s.solicitado_por) || "Profesor")}</strong> · ${escHtml(clase)} · ${escHtml(s.periodo)}</p>
+            <p class="text-xs" style="color:#1C2B3A">Alumno: <strong>${escHtml(alum)}</strong></p>
+            <p class="text-xs mb-1" style="color:#6C7B8A">${new Date(s.creado_en).toLocaleDateString("es-MX")} — Motivo: ${escHtml(s.motivo)}</p>
+            <button class="solCalRes px-3 py-1 rounded-lg text-xs font-bold" data-id="${s.id}" data-ok="1" style="background:#3F7A5E; color:#fff">Autorizar</button>
+            <button class="solCalRes px-3 py-1 rounded-lg text-xs font-semibold" data-id="${s.id}" data-ok="0" style="background:#F5E4E1; color:#B5453A">Rechazar</button>
+          </div>`;
+        }).join("")}
+        <div id="solCalMsg"></div>
+      </div>` : "");
+    caja.querySelectorAll(".solCalRes").forEach(b => b.addEventListener("click", async () => {
+      const autorizar = b.dataset.ok === "1";
+      if (!confirm(autorizar ? "¿Autorizar al profesor a modificar las calificaciones de este alumno?" : "¿Rechazar la solicitud?")) return;
+      const { error: e1 } = await sb.from("solicitudes_calificaciones").update({
+        estado: autorizar ? "Autorizada" : "Rechazada", resuelto_por: state.perfil.id, resuelto_en: new Date().toISOString(),
+      }).eq("id", b.dataset.id);
+      if (e1) { document.getElementById("solCalMsg").innerHTML = errBox(escHtml(e1.message)); return; }
+      await cargarSolicitudes();
+      if (!nSolic) { cargarCalInfo(); }
+    }));
     caja.querySelectorAll(".solRes").forEach(b => b.addEventListener("click", async () => {
       const s = data.find(x => x.id === b.dataset.id);
       const autorizar = b.dataset.ok === "1";
-      if (!confirm(autorizar ? "¿Autorizar al profesor a modificar los criterios y calificaciones de este periodo?" : "¿Rechazar la solicitud?")) return;
+      if (!confirm(autorizar ? "¿Autorizar al profesor a modificar estos criterios?" : "¿Rechazar la solicitud?")) return;
       const { error: e1 } = await sb.from("solicitudes_criterios").update({
         estado: autorizar ? "Autorizada" : "Rechazada", resuelto_por: state.perfil.id, resuelto_en: new Date().toISOString(),
       }).eq("id", s.id);
@@ -4831,6 +4863,12 @@ function renderCalificaciones(main) {
     const estadosPeriodo = {};
     (periodosRes.data || []).forEach(p => { estadosPeriodo[p.periodo] = p.estado; });
     const solicitudesPend = new Set((solRes.data || []).map(r => r.periodo));
+    // Solicitudes de modificación de calificaciones por alumno (clave "periodo|alumno")
+    const solCalPend = new Set(), solCalAut = new Map();
+    {
+      const r = await sb.from("solicitudes_calificaciones").select("id, periodo, alumno_id, estado").eq("asignacion_id", asignacion.id).in("estado", ["Pendiente", "Autorizada"]);
+      (r.data || []).forEach(x => { if (x.estado === "Pendiente") solCalPend.add(x.periodo + "|" + x.alumno_id); else solCalAut.set(x.periodo + "|" + x.alumno_id, x.id); });
+    }
     const criterios = criteriosRes.data || [];
     const alumnos = (alumnosRes.data || []).map(i => i.alumnos ? { ...i.alumnos, _desde: fechaDesdeAlumno(i) } : null).filter(Boolean).sort((a, b) => a.apellido_paterno.localeCompare(b.apellido_paterno));
 
@@ -4848,7 +4886,7 @@ function renderCalificaciones(main) {
 
     function estaBloqueada(alumnoId, criterioId) {
       const c = criterios.find(x => x.id === criterioId);
-      return guardadasBD.has(alumnoId + "|" + criterioId) && !(c && estadosPeriodo[c.periodo] === "Autorizado");
+      return guardadasBD.has(alumnoId + "|" + criterioId) && !(c && solCalAut.has(c.periodo + "|" + alumnoId));
     }
 
     function obtenerValor(alumnoId, criterioId) {
@@ -4883,7 +4921,7 @@ function renderCalificaciones(main) {
       const sumaPonderacion = criteriosPeriodo.reduce((s, c) => s + Number(c.ponderacion), 0);
       const confirmado = estadosPeriodo[periodoActivo] === "Confirmado";
       const puedeEditarCriterios = puedeEditar && !confirmado;
-      const puedeCapturar = puedeEditar && (confirmado || estadosPeriodo[periodoActivo] === "Autorizado");
+      const puedeCapturar = puedeEditar && confirmado;
 
       cont.innerHTML = `
         ${!puedeEditar ? `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#EEF2FB; color:#1E3A8A">Solo consulta: los criterios y las calificaciones los captura el profesor de la clase.${confirmado ? "" : " Los criterios de este periodo aún no están confirmados."}</div>` : ""}
@@ -4909,7 +4947,7 @@ function renderCalificaciones(main) {
           <button id="calConfirmarBtn" class="mt-2 px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Confirmar criterios</button>
           <p class="text-xs mt-1" style="color:#6C7B8A">Debes confirmar los criterios (suma 100%) para capturar calificaciones. Después solo se pueden cambiar con autorización de un supervisor.</p>` : ""}` : (puedeEditar ? `
           <div class="mt-2 p-2 rounded-lg text-xs" style="background:#F4F1EB; color:#1E3A8A">
-            🔒 Criterios confirmados y calificaciones guardadas bloqueadas. Para modificarlos se necesita autorización del director; los alumnos sin calificación sí se pueden capturar.
+            🔒 Criterios confirmados.
             ${solicitudesPend.has(periodoActivo) ? "Hay una solicitud de modificación pendiente de autorización." : `<button id="calSolicitarBtn" class="ml-1 px-2 py-1 rounded-lg font-semibold" style="background:#1E3A8A; color:#fff">Solicitar modificación</button>`}
           </div>
           <div id="calCriterioMsg" class="mt-1"></div>` : "")}
@@ -4932,6 +4970,7 @@ function renderCalificaciones(main) {
               <tr style="color:#6C7B8A">
                 <th class="text-left pb-2">Alumno</th>
                 ${criteriosPeriodo.map(c => `<th class="text-center pb-2 px-1">${c.nombre}<br><span class="text-xs font-normal">(${c.ponderacion}%)</span></th>`).join("")}
+                ${puedeCapturar ? `<th class="text-center pb-2 px-1">Modificar</th>` : ""}
                 <th class="text-center pb-2">Final</th>
               </tr>
             </thead>
@@ -4940,6 +4979,14 @@ function renderCalificaciones(main) {
                 <tr style="color:#1C2B3A">
                   <td class="py-1 pr-2">${a.nombres} ${a.apellido_paterno}</td>
                   ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" inputmode="decimal" min="0" max="10" step="any" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar && !estaBloqueada(a.id, c.id) ? "" : "disabled"} ${puedeCapturar && estaBloqueada(a.id, c.id) ? 'title="Calificación guardada: solo se modifica con autorización del director" style="background:#F4F1EB"' : ""} /></td>`).join("")}
+                  ${puedeCapturar ? `<td class="text-center py-1">${(() => {
+                    const k = periodoActivo + "|" + a.id;
+                    const tieneGuardadas = criteriosPeriodo.some(c => guardadasBD.has(a.id + "|" + c.id));
+                    if (solCalAut.has(k)) return `<span class="text-xs font-semibold" style="color:#3F7A5E">Autorizado: edita y guarda</span>`;
+                    if (solCalPend.has(k)) return `<span class="text-xs" style="color:#B8860B">Solicitud pendiente</span>`;
+                    if (tieneGuardadas) return `<button type="button" class="calModBtn px-2 py-1 rounded-lg text-xs font-semibold" data-alumno="${a.id}" style="background:#EEF2FB; color:#1E3A8A">Modificar</button>`;
+                    return "";
+                  })()}</td>` : ""}
                   <td class="text-center font-semibold" id="calFinal_${a.id}">${finalMostrar(a.id, criteriosPeriodo)}</td>
                 </tr>`).join("")}
             </tbody>
@@ -4950,6 +4997,18 @@ function renderCalificaciones(main) {
       `;
 
       document.querySelectorAll(".calPeriodoBtn").forEach(b => b.addEventListener("click", () => { periodoActivo = b.dataset.p; pintar(); }));
+
+      document.querySelectorAll(".calModBtn").forEach(b => b.addEventListener("click", async () => {
+        const al = alumnos.find(x => x.id === b.dataset.alumno);
+        const motivo = prompt(`Las calificaciones de ${al ? al.nombres + " " + al.apellido_paterno : "este alumno"} ya están guardadas. Escribe la razón por la cual deseas modificarlas; se enviará la solicitud al director para su autorización:`);
+        if (!motivo || !motivo.trim()) return;
+        b.disabled = true;
+        const { error } = await sb.from("solicitudes_calificaciones").insert({ asignacion_id: asignacion.id, periodo: periodoActivo, alumno_id: b.dataset.alumno, motivo: motivo.trim() });
+        if (error) { b.disabled = false; const m = document.getElementById("calGuardarMsg"); if (m) m.innerHTML = errBox(escHtml(error.message)); return; }
+        solCalPend.add(periodoActivo + "|" + b.dataset.alumno);
+        pintar();
+        const m = document.getElementById("calGuardarMsg"); if (m) m.innerHTML = okBox("Solicitud enviada al director. Cuando la autorice podrás modificar las calificaciones de ese alumno.");
+      }));
 
       if (puedeEditar && periodoActivo) {
         const btnAgregar = document.getElementById("calAgregarCriterioBtn");
@@ -4989,7 +5048,7 @@ function renderCalificaciones(main) {
 
         const btnSolicitar = document.getElementById("calSolicitarBtn");
         if (btnSolicitar) btnSolicitar.addEventListener("click", async () => {
-          const motivo = prompt("Explica por qué necesitas modificar los criterios o calificaciones de " + periodoActivo + ":");
+          const motivo = prompt("Explica por qué necesitas modificar los criterios de " + periodoActivo + ":");
           if (!motivo || !motivo.trim()) return;
           const { error } = await sb.from("solicitudes_criterios").insert({ asignacion_id: asignacion.id, periodo: periodoActivo, motivo: motivo.trim() });
           if (error) { document.getElementById("calCriterioMsg").innerHTML = errBox(error.message); return; }
@@ -5107,9 +5166,17 @@ function renderCalificaciones(main) {
           const { error } = await sb.from("calificaciones").upsert(filas, { onConflict: "criterio_id,alumno_id" });
           btnGuardar.disabled = false;
           if (error) { msg.innerHTML = errBox(error.message); return; }
-          const autorizadoAhora = estadosPeriodo[periodoActivo] === "Autorizado";
-          inputs.forEach(i => { guardadasBD.add(i.dataset.alumno + "|" + i.dataset.criterio); if (!autorizadoAhora) { i.disabled = true; i.style.background = "#F4F1EB"; i.title = "Calificación guardada: solo se modifica con autorización del director"; } });
-          msg.innerHTML = okBox("Calificaciones guardadas." + (autorizadoAhora ? "" : " Las calificaciones guardadas quedaron bloqueadas; para cambiarlas se requiere autorización del director.") + (subidasA5 ? ` ${subidasA5} calificación(es) menor(es) a 5 se asentaron como 5, conforme a la normatividad.` : ""));
+          const alAplicados = [...new Set(inputs.map(i => i.dataset.alumno))].filter(id => solCalAut.has(periodoActivo + "|" + id));
+          for (const id of alAplicados) {
+            const k = periodoActivo + "|" + id;
+            await sb.from("solicitudes_calificaciones").update({ estado: "Aplicada" }).eq("id", solCalAut.get(k));
+            solCalAut.delete(k);
+          }
+          inputs.forEach(i => { guardadasBD.add(i.dataset.alumno + "|" + i.dataset.criterio); });
+          if (alAplicados.length) { pintar(); }
+          else inputs.forEach(i => { i.disabled = true; i.style.background = "#F4F1EB"; i.title = "Calificación guardada: solo se modifica con autorización del director"; });
+          const msg2 = document.getElementById("calGuardarMsg");
+          if (msg2) msg2.innerHTML = okBox("Calificaciones guardadas. Las calificaciones guardadas quedaron bloqueadas; para cambiarlas se requiere autorización del director." + (subidasA5 ? ` ${subidasA5} calificación(es) menor(es) a 5 se asentaron como 5, conforme a la normatividad.` : ""));
         });
 
         document.querySelectorAll(".calValorInput").forEach(inp => inp.addEventListener("input", () => {
@@ -5166,7 +5233,7 @@ const BITACORA_TABLAS = {
   alumnos: "Alumnos", tutores: "Tutores", alumno_tutores: "Alumno-tutor", inscripciones: "Inscripciones",
   grupos: "Grupos", grados: "Grados", ciclos_escolares: "Ciclos escolares", materias: "Materias",
   perfiles: "Usuarios/Personal", profesor_materias_grupos: "Asignaciones", criterios_evaluacion: "Criterios de evaluación",
-  calificaciones: "Calificaciones", periodos_criterios: "Estado de criterios", solicitudes_criterios: "Solicitudes de criterios",
+  calificaciones: "Calificaciones", periodos_criterios: "Estado de criterios", solicitudes_criterios: "Solicitudes de criterios", solicitudes_calificaciones: "Solicitudes de calificaciones",
   asistencia_clase: "Asistencia de clase", registros_acceso: "Entradas y salidas", rostros: "Rostros registrados",
   datos_institucion: "Datos del instituto", categorias_mobiliario: "Categorías de mobiliario", mobiliario: "Mobiliario",
 };
