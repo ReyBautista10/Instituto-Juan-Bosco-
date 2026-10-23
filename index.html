@@ -4680,6 +4680,22 @@ function calOficial(x) {
 }
 const fmtEntero = n => n == null ? "—" : String(n);
 // Pregunta al profesor cuál es la calificación correcta cuando capturó un decimal. Devuelve el entero elegido o null si cancela.
+function confirmarGuardarSinCaptura(nombres) {
+  return new Promise(resolve => {
+    const m = document.createElement("div");
+    m.className = "fixed inset-0 z-50 flex items-center justify-center p-4";
+    m.style.background = "rgba(28,43,58,0.6)";
+    m.innerHTML = `<div class="rounded-2xl p-5 bg-white w-full max-w-sm">
+      <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Alumnos sin calificaciones</p>
+      <p class="text-xs mb-2" style="color:#6C7B8A">Estos alumnos no tienen ninguna calificación capturada en este periodo. ¿Deseas guardar de todos modos sin capturar su información?</p>
+      <ul class="text-xs mb-3 pl-4 list-disc overflow-auto" style="max-height:30vh; color:#1C2B3A">${nombres.map(n => `<li>${escHtml(n)}</li>`).join("")}</ul>
+      <div class="flex gap-2"><button id="cgNo" class="flex-1 py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Volver a capturar</button>
+      <button id="cgSi" class="flex-1 py-2 rounded-lg text-sm font-semibold text-white" style="background:#1E3A8A">Guardar así</button></div></div>`;
+    document.body.appendChild(m);
+    m.querySelector("#cgNo").addEventListener("click", () => { m.remove(); resolve(false); });
+    m.querySelector("#cgSi").addEventListener("click", () => { m.remove(); resolve(true); });
+  });
+}
 function elegirCalificacionEntera(detalle, valor, bajo, alto) {
   return new Promise(resolve => {
     const m = document.createElement("div");
@@ -5041,6 +5057,24 @@ function renderCalificaciones(main) {
           if (inputs.some(i => isNaN(Number(i.value)) || Number(i.value) > 10)) {
             msg.innerHTML = errBox("Todas las calificaciones deben ser números del 5 al 10."); return;
           }
+          // Completitud: si un alumno ya tiene alguna calificación, debe tener todos los criterios; sin ninguna, se pide confirmación.
+          const todos = [...document.querySelectorAll(".calValorInput")];
+          todos.forEach(i => { i.style.borderColor = ""; });
+          const nomAl = id => { const al = alumnos.find(x => x.id === id); return al ? `${al.apellido_paterno || ""} ${al.apellido_materno || ""} ${al.nombres || ""}`.replace(/\s+/g, " ").trim() : "Alumno"; };
+          const porAlumno = {};
+          todos.forEach(i => { (porAlumno[i.dataset.alumno] = porAlumno[i.dataset.alumno] || []).push(i); });
+          const incompletos = [], vacios = [];
+          Object.entries(porAlumno).forEach(([id, lst]) => {
+            const llenos = lst.filter(i => i.value !== "").length;
+            if (llenos === 0) vacios.push(id);
+            else if (llenos < lst.length) { incompletos.push(id); lst.filter(i => i.value === "").forEach(i => { i.style.borderColor = "#B91C1C"; }); }
+          });
+          if (incompletos.length) {
+            msg.innerHTML = errBox("Faltan calificaciones de algún criterio (marcados en rojo) de: " + incompletos.map(nomAl).join("; ") + ". Si un alumno ya tiene una calificación, todos sus criterios deben capturarse.");
+            const primero = document.querySelector(".calValorInput[style*='B91C1C']"); if (primero) primero.focus();
+            return;
+          }
+          if (vacios.length && !(await confirmarGuardarSinCaptura(vacios.map(nomAl)))) return;
           // Reglas de Normatividad: mínimo 5 y sin decimales (si hay decimal, el profesor elige el entero correcto).
           let subidasA5 = 0;
           btnGuardar.disabled = true;
