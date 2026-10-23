@@ -35,6 +35,7 @@
     #ibPrintHost .ib-imprimible * { visibility: visible !important; }
     #ibPrintHost .ib-hoja { min-height: 24.6cm; box-sizing: border-box; padding: 0 !important; border: none !important; border-radius: 0 !important; margin: 0 !important; }
     #ibPrintHost .ib-hoja + .ib-hoja { margin-top: 0 !important; }
+    #ibPrintHost .ib-salto { break-after: page; page-break-after: always; }
     body * { visibility: hidden; }
     .ib-imprimible, .ib-imprimible * { visibility: visible; }
     .ib-imprimible { position: absolute; top: 0; left: 0; }
@@ -5335,8 +5336,114 @@ function renderBoletas(main) {
         </div>
         <div id="boResultados" class="mt-2"></div>
       </div>
+      <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Imprimir boletas por nivel, grado o grupo</p>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <div><label class="block text-xs mb-1" style="color:#6C7B8A">Ciclo escolar</label><select id="boLoteCiclo" class="w-full px-2 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"></select></div>
+          <div><label class="block text-xs mb-1" style="color:#6C7B8A">Nivel académico</label><select id="boLoteNivel" class="w-full px-2 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos</option><option>Secundaria</option><option>Preparatoria</option></select></div>
+          <div><label class="block text-xs mb-1" style="color:#6C7B8A">Grado</label><select id="boLoteGrado" class="w-full px-2 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos</option></select></div>
+          <div><label class="block text-xs mb-1" style="color:#6C7B8A">Grupo</label><select id="boLoteGrupo" class="w-full px-2 py-2 rounded-lg text-sm border" style="border-color:#E1DED5"><option value="">Todos</option></select></div>
+        </div>
+        <button id="boLoteBtn" type="button" class="px-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Generar boletas</button>
+        <div id="boLoteMsg" class="mt-2"></div>
+      </div>
       <div id="boBoleta"></div>
+      <div id="boLote"></div>
     </div>`;
+
+  // ---- Impresión por nivel / grado / grupo ----
+  let gruposLote = [], ciclosLote = [];
+  (async () => {
+    const [g, c] = await Promise.all([
+      sb.from("grupos").select("id, letra, grados(id, nombre, nivel)"),
+      sb.from("ciclos_escolares").select("id, nombre, nivel, activo, fecha_inicio").order("fecha_inicio", { ascending: false }),
+    ]);
+    gruposLote = (g.data || []).filter(x => x.grados);
+    ciclosLote = c.data || [];
+    const selC = document.getElementById("boLoteCiclo");
+    if (!selC) return;
+    selC.innerHTML = `<option value="activo">Ciclo activo de cada nivel</option>` + ciclosLote.map(x => `<option value="${x.id}">${escHtml(x.nombre)} — ${escHtml(x.nivel || "")}</option>`).join("");
+    llenarGrados();
+  })();
+  function gruposFiltrados(nivel, gradoId) {
+    return gruposLote.filter(g => (!nivel || g.grados.nivel === nivel) && (!gradoId || g.grados.id === gradoId));
+  }
+  function llenarGrados() {
+    const nivel = document.getElementById("boLoteNivel").value;
+    const mapa = new Map();
+    gruposFiltrados(nivel, "").forEach(g => mapa.set(g.grados.id, g.grados));
+    const grados = [...mapa.values()].sort((a, b) => (a.nivel + a.nombre).localeCompare(b.nivel + b.nombre, "es"));
+    document.getElementById("boLoteGrado").innerHTML = `<option value="">Todos</option>` + grados.map(g => `<option value="${g.id}">${escHtml(g.nombre)}${nivel ? "" : " (" + escHtml(g.nivel) + ")"}</option>`).join("");
+    llenarGrupos();
+  }
+  function llenarGrupos() {
+    const nivel = document.getElementById("boLoteNivel").value, gradoId = document.getElementById("boLoteGrado").value;
+    const letras = [...new Set(gruposFiltrados(nivel, gradoId).map(g => g.letra))].sort((a, b) => String(a).localeCompare(String(b), "es"));
+    document.getElementById("boLoteGrupo").innerHTML = `<option value="">Todos</option>` + letras.map(l => `<option value="${escHtml(l)}">${escHtml(l)}</option>`).join("");
+  }
+  document.getElementById("boLoteNivel").addEventListener("change", llenarGrados);
+  document.getElementById("boLoteGrado").addEventListener("change", llenarGrupos);
+  document.getElementById("boLoteBtn").addEventListener("click", generarLote);
+
+  async function generarLote() {
+    const msg = document.getElementById("boLoteMsg"), caja = document.getElementById("boLote");
+    const btn = document.getElementById("boLoteBtn");
+    document.getElementById("boBoleta").innerHTML = ""; caja.innerHTML = ""; msg.innerHTML = "";
+    const nivel = document.getElementById("boLoteNivel").value, gradoId = document.getElementById("boLoteGrado").value, letra = document.getElementById("boLoteGrupo").value;
+    const cicloSel = document.getElementById("boLoteCiclo").value;
+    const grupos = gruposFiltrados(nivel, gradoId).filter(g => !letra || g.letra === letra);
+    if (grupos.length === 0) { msg.innerHTML = errBox("No hay grupos con ese filtro."); return; }
+    const cicloIds = cicloSel === "activo" ? ciclosLote.filter(c => c.activo).map(c => c.id) : [cicloSel];
+    if (cicloIds.length === 0) { msg.innerHTML = errBox("No hay ciclo escolar activo."); return; }
+    btn.disabled = true; msg.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando alumnos…</p>`;
+    try {
+      const grupoIds = grupos.map(g => g.id);
+      const { data: insc, error: e0 } = await sb.from("inscripciones")
+        .select("grupo_id, ciclo_escolar_id, alumnos(id, nombres, apellido_paterno, apellido_materno, matricula, curp), grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre)")
+        .eq("estado", "Inscrito").in("grupo_id", grupoIds).in("ciclo_escolar_id", cicloIds);
+      if (e0) throw e0;
+      const lista = (insc || []).filter(i => i.alumnos && i.grupos && i.grupos.grados && i.ciclos_escolares);
+      if (lista.length === 0) { msg.innerHTML = errBox("No hay alumnos inscritos con ese filtro."); return; }
+      lista.sort((a, b) => (a.grupos.grados.nivel + a.grupos.grados.nombre + a.grupos.letra).localeCompare(b.grupos.grados.nivel + b.grupos.grados.nombre + b.grupos.letra, "es")
+        || (a.alumnos.apellido_paterno + " " + (a.alumnos.apellido_materno || "") + a.alumnos.nombres).localeCompare(b.alumnos.apellido_paterno + " " + (b.alumnos.apellido_materno || "") + b.alumnos.nombres, "es"));
+
+      msg.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando materias y calificaciones…</p>`;
+      const { data: asigs, error: e1 } = await sb.from("profesor_materias_grupos").select("id, grupo_id, ciclo_escolar_id, materias(nombre)").in("grupo_id", grupoIds).in("ciclo_escolar_id", cicloIds);
+      if (e1) throw e1;
+      const asignaciones = (asigs || []).filter(a => a.materias);
+      let criterios = [];
+      for (let k = 0; k < asignaciones.length; k += 100) {
+        const { data, error } = await sb.from("criterios_evaluacion").select("id, asignacion_id, periodo, ponderacion").in("asignacion_id", asignaciones.slice(k, k + 100).map(a => a.id));
+        if (error) throw error; criterios = criterios.concat(data || []);
+      }
+      const alumnoIds = [...new Set(lista.map(i => i.alumnos.id))];
+      const critIds = criterios.map(c => c.id);
+      const valoresPorAlumno = new Map();
+      const alSet = new Set(alumnoIds);
+      for (let k = 0; k < critIds.length; k += 100) {
+        const trozo = critIds.slice(k, k + 100);
+        for (let desde = 0; ; desde += 1000) {
+          const { data, error } = await sb.from("calificaciones").select("alumno_id, criterio_id, valor").in("criterio_id", trozo).order("criterio_id").order("alumno_id").range(desde, desde + 999);
+          if (error) throw error;
+          (data || []).forEach(r => { if (!alSet.has(r.alumno_id)) return; if (!valoresPorAlumno.has(r.alumno_id)) valoresPorAlumno.set(r.alumno_id, new Map()); valoresPorAlumno.get(r.alumno_id).set(r.criterio_id, Number(r.valor)); });
+          if (!data || data.length < 1000) break;
+        }
+      }
+      const { data: inst } = await sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad, director_nombre, director_secundaria, director_preparatoria").eq("id", 1).maybeSingle();
+      const logo = document.getElementById("headerLogo")?.src || "";
+      const html = lista.map((i, k) => boletaHTML({
+        alumno: i.alumnos, insc: i,
+        asignaciones: asignaciones.filter(a => a.grupo_id === i.grupo_id && a.ciclo_escolar_id === i.ciclo_escolar_id),
+        criterios, valores: valoresPorAlumno.get(i.alumnos.id) || new Map(), inst: inst || {}, logo,
+        clases: "mb-3 " + (k < lista.length - 1 ? "ib-salto" : ""),
+      })).join("");
+      msg.innerHTML = okBox(`${lista.length} boleta(s) generada(s).`);
+      caja.innerHTML = `<button id="boLoteImprimir" type="button" class="w-64 mx-auto block mb-3 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / PDF de ${lista.length} boleta(s)</button>${html}`;
+      document.getElementById("boLoteImprimir").addEventListener("click", () => imprimirElementos([...document.querySelectorAll("#boLote .ib-imprimible")]));
+    } catch (e) {
+      msg.innerHTML = errBox(escHtml(e.message || String(e)));
+    } finally { btn.disabled = false; }
+  }
 
   document.getElementById("boBuscarBtn").addEventListener("click", buscar);
   document.getElementById("boBuscarInput").addEventListener("keydown", e => { if (e.key === "Enter") buscar(); });
@@ -5360,6 +5467,7 @@ function renderBoletas(main) {
 
   async function cargarAlumno(alumno) {
     const caja = document.getElementById("boBoleta");
+    const lote = document.getElementById("boLote"); if (lote) lote.innerHTML = "";
     caja.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
     const { data: insc, error } = await sb.from("inscripciones")
       .select("grupo_id, ciclo_escolar_id, fecha_inscripcion, grupos(letra, grados(nombre, nivel)), ciclos_escolares(nombre)")
@@ -5379,35 +5487,11 @@ function renderBoletas(main) {
     pintarBoleta(alumno, inscripciones[0]);
   }
 
-  async function pintarBoleta(alumno, insc) {
-    const cont = document.getElementById("boContenido");
-    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Generando boleta…</p>`;
-
-    const [asigRes, instRes] = await Promise.all([
-      sb.from("profesor_materias_grupos").select("id, materias(nombre)").eq("grupo_id", insc.grupo_id).eq("ciclo_escolar_id", insc.ciclo_escolar_id),
-      sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad, director_nombre, director_secundaria, director_preparatoria").eq("id", 1).maybeSingle(),
-    ]);
-    if (asigRes.error) { cont.innerHTML = errBox(escHtml(asigRes.error.message)); return; }
-    const asignaciones = (asigRes.data || []).filter(a => a.materias);
-    const ids = asignaciones.map(a => a.id);
-
-    let criterios = [];
-    let califs = [];
-    if (ids.length > 0) {
-      const { data: crit, error: e1 } = await sb.from("criterios_evaluacion").select("id, asignacion_id, periodo, ponderacion").in("asignacion_id", ids);
-      if (e1) { cont.innerHTML = errBox(escHtml(e1.message)); return; }
-      criterios = crit || [];
-      if (criterios.length > 0) {
-        const { data: cal, error: e2 } = await sb.from("calificaciones").select("criterio_id, valor").eq("alumno_id", alumno.id).in("criterio_id", criterios.map(c => c.id));
-        if (e2) { cont.innerHTML = errBox(escHtml(e2.message)); return; }
-        califs = cal || [];
-      }
-    }
-
+  // Construye el HTML de una boleta (sin botones) a partir de los datos ya cargados.
+  function boletaHTML({ alumno, insc, asignaciones, criterios, valores, inst, logo, idDiv, clases }) {
     const nivel = insc.grupos.grados.nivel;
     const prefijo = nivel === "Preparatoria" ? "Bimestre" : "Parcial";
     const periodos = [1, 2, 3, 4, 5].map(n => `${prefijo} ${n}`);
-    const valores = new Map(califs.map(c => [c.criterio_id, Number(c.valor)]));
 
     // Calificación del periodo = suma(valor × ponderación / 100). Solo se muestra si el periodo
     // ya tiene capturada al menos una calificación de este alumno.
@@ -5428,12 +5512,10 @@ function renderBoletas(main) {
     const conPromedio = filas.filter(f => f.promedio != null);
     const general = conPromedio.length ? conPromedio.reduce((s, f) => s + f.promedio, 0) / conPromedio.length : null;
     const fmt = n => n == null ? "—" : n.toFixed(1);
-    const inst = instRes.data || {};
-    const logo = document.getElementById("headerLogo")?.src || "";
     const nombreAlumno = `${alumno.apellido_paterno} ${alumno.apellido_materno || ""} ${alumno.nombres}`.trim();
 
-    cont.innerHTML = `
-      <div id="ibBoletaImprimible" class="ib-imprimible ib-hoja p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px">
+    return `
+      <div ${idDiv ? `id="${idDiv}"` : ""} class="ib-imprimible ib-hoja ${clases || ""} p-6 rounded-xl bg-white border" style="border-color:#E1DED5; width:100%; max-width:760px">
         <div class="flex items-center gap-3 mb-3">
           ${logo ? `<img src="${logo}" style="height:56px" alt="" />` : ""}
           <div class="flex-1 text-center">
@@ -5479,6 +5561,38 @@ function renderBoletas(main) {
         </div>
         <p class="text-xs mt-4" style="color:#6C7B8A">Expedida el ${new Date().toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" })}.</p>
       </div>
+`;
+  }
+
+  async function pintarBoleta(alumno, insc) {
+    const cont = document.getElementById("boContenido");
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Generando boleta…</p>`;
+
+    const [asigRes, instRes] = await Promise.all([
+      sb.from("profesor_materias_grupos").select("id, materias(nombre)").eq("grupo_id", insc.grupo_id).eq("ciclo_escolar_id", insc.ciclo_escolar_id),
+      sb.from("datos_institucion").select("nombre_oficial, domicilio, ciudad, director_nombre, director_secundaria, director_preparatoria").eq("id", 1).maybeSingle(),
+    ]);
+    if (asigRes.error) { cont.innerHTML = errBox(escHtml(asigRes.error.message)); return; }
+    const asignaciones = (asigRes.data || []).filter(a => a.materias);
+    const ids = asignaciones.map(a => a.id);
+
+    let criterios = [];
+    let califs = [];
+    if (ids.length > 0) {
+      const { data: crit, error: e1 } = await sb.from("criterios_evaluacion").select("id, asignacion_id, periodo, ponderacion").in("asignacion_id", ids);
+      if (e1) { cont.innerHTML = errBox(escHtml(e1.message)); return; }
+      criterios = crit || [];
+      if (criterios.length > 0) {
+        const { data: cal, error: e2 } = await sb.from("calificaciones").select("criterio_id, valor").eq("alumno_id", alumno.id).in("criterio_id", criterios.map(c => c.id));
+        if (e2) { cont.innerHTML = errBox(escHtml(e2.message)); return; }
+        califs = cal || [];
+      }
+    }
+
+    const valores = new Map(califs.map(c => [c.criterio_id, Number(c.valor)]));
+    const inst = instRes.data || {};
+    const logo = document.getElementById("headerLogo")?.src || "";
+    cont.innerHTML = boletaHTML({ alumno, insc, asignaciones, criterios, valores, inst, logo, idDiv: "ibBoletaImprimible" }) + `
       <button id="boImprimirBtn" class="w-48 mx-auto block mt-4 py-2 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Imprimir / Descargar PDF</button>`;
     document.getElementById("boImprimirBtn").addEventListener("click", () => imprimirSolo(null));
   }
