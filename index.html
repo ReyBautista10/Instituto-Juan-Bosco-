@@ -3240,7 +3240,7 @@ Están prohibidos: las agresiones físicas o verbales, el acoso o intimidación 
 Las faltas se atenderán de forma progresiva: aviso a los padres de familia en faltas leves; citatorio y reunión con acuerdos en faltas graves, que quedarán por escrito y firmados por el tutor, la Dirección y un testigo. Las faltas graves o reiteradas podrán dar lugar a las sanciones que determine la Dirección, hasta la suspensión o baja del plantel, respetando siempre el derecho del alumno y de su familia a ser escuchados.
 
 ## V. Evaluación académica
-La evaluación se realiza conforme a los criterios que cada docente da a conocer al inicio de cada periodo. Las calificaciones se expresan en escala de 0 a 10.
+La evaluación se realiza conforme a los criterios que cada docente da a conocer al inicio de cada periodo. Las calificaciones se expresan en números enteros, con mínimo de 5 y máximo de 10.
 El alumno debe cumplir con tareas, trabajos y evaluaciones en las fechas indicadas. Cualquier conducta deshonesta (copia, plagio o suplantación) será sancionada.
 
 ## VI. Uso de teléfonos celulares y tecnología
@@ -4664,9 +4664,39 @@ async function calcularAsistenciaClase(asignacion, alumnos, desde, hasta) {
     });
     const base = asist + faltas;
     return { alumno_id: a.id, nombre: `${a.apellido_paterno} ${a.apellido_materno || ""} ${a.nombres}`.replace(/\s+/g, " ").trim(), asistencias: asist, faltas, justificadas: just,
-      calif: base > 0 ? Math.round((10 * asist / base) * 10) / 10 : null };
+      calif: base > 0 ? calOficial(10 * asist / base) : null };
   }).sort((x, y) => x.nombre.localeCompare(y.nombre, "es"));
   return { sesiones: fechas.size, filas };
+}
+
+// Normatividad: no se asientan calificaciones menores a 5 ni con decimales.
+// Calificación calculada automáticamente: 0 a 5.99 => 5; desde 6, decimal < .6 baja y decimal >= .6 sube.
+function calOficial(x) {
+  if (x == null || isNaN(Number(x))) return null;
+  const v = Math.round(Number(x) * 100) / 100;
+  if (v < 6) return 5;
+  const base = Math.floor(v), dec = Math.round((v - base) * 100) / 100;
+  return Math.min(10, dec >= 0.6 ? base + 1 : base);
+}
+const fmtEntero = n => n == null ? "—" : String(n);
+// Pregunta al profesor cuál es la calificación correcta cuando capturó un decimal. Devuelve el entero elegido o null si cancela.
+function elegirCalificacionEntera(detalle, valor, bajo, alto) {
+  return new Promise(resolve => {
+    const m = document.createElement("div");
+    m.className = "fixed inset-0 z-50 flex items-center justify-center p-4";
+    m.style.background = "rgba(28,43,58,0.6)";
+    m.innerHTML = `<div class="rounded-2xl p-5 bg-white w-full max-w-sm">
+      <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">No se manejan decimales en las calificaciones</p>
+      <p class="text-xs mb-3" style="color:#6C7B8A">${escHtml(detalle)}: capturaste <strong>${valor}</strong>. ¿Cuál es la calificación correcta?</p>
+      <div class="flex gap-2 mb-2">
+        <button class="ceOp flex-1 py-3 rounded-lg text-lg font-bold" data-v="${bajo}" style="background:#EEF2FB; color:#1E3A8A">${bajo}</button>
+        <button class="ceOp flex-1 py-3 rounded-lg text-lg font-bold" data-v="${alto}" style="background:#EEF2FB; color:#1E3A8A">${alto}</button>
+      </div>
+      <button id="ceCancelar" class="w-full py-2 rounded-lg text-sm font-semibold" style="background:#F4F1EB; color:#1E3A8A">Cancelar guardado</button></div>`;
+    document.body.appendChild(m);
+    m.querySelectorAll(".ceOp").forEach(b => b.addEventListener("click", () => { m.remove(); resolve(Number(b.dataset.v)); }));
+    m.querySelector("#ceCancelar").addEventListener("click", () => { m.remove(); resolve(null); });
+  });
 }
 
 function renderCalificaciones(main) {
@@ -4801,6 +4831,11 @@ function renderCalificaciones(main) {
     function obtenerValor(alumnoId, criterioId) {
       return valoresCache[alumnoId]?.[criterioId] ?? null;
     }
+    // Calificación final del periodo para mostrar: entera (regla oficial); "—" si aún no hay nada capturado.
+    function finalMostrar(alumnoId, criteriosPeriodo) {
+      const hay = criteriosPeriodo.some(c => valoresCache[alumnoId]?.[c.id] != null);
+      return hay ? String(calOficial(calcularFinal(alumnoId, criteriosPeriodo))) : "—";
+    }
     function calcularFinal(alumnoId, criteriosPeriodo) {
       let total = 0;
       criteriosPeriodo.forEach(c => {
@@ -4860,7 +4895,7 @@ function renderCalificaciones(main) {
         ${criteriosPeriodo.length > 0 && alumnos.length > 0 ? `
         <div class="p-4 rounded-xl bg-white border overflow-x-auto" style="border-color:#E1DED5">
           <div class="text-xs mb-3 p-2 rounded-lg" style="background:#EEF2FB; color:#1E3A8A">
-            <strong>¿Cómo capturar?</strong> Escribe la calificación que obtuvo el alumno en cada criterio en <strong>escala de 0 a 10</strong>.
+            <strong>¿Cómo capturar?</strong> Escribe la calificación que obtuvo el alumno en cada criterio, <strong>número entero del 5 al 10</strong> (por normatividad no se asienta menos de 5; si capturas un decimal, el sistema te preguntará cuál es la correcta).
             El sistema aplica automáticamente el porcentaje de cada criterio y calcula la calificación final del periodo.
             Ejemplo: si en "Examen" (40%) el alumno sacó 8, aporta 3.2 puntos a la final.
           </div>
@@ -4881,8 +4916,8 @@ function renderCalificaciones(main) {
               ${alumnos.map(a => `
                 <tr style="color:#1C2B3A">
                   <td class="py-1 pr-2">${a.nombres} ${a.apellido_paterno}</td>
-                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" inputmode="decimal" min="0" max="10" step="0.1" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar ? "" : "disabled"} /></td>`).join("")}
-                  <td class="text-center font-semibold" id="calFinal_${a.id}">${calcularFinal(a.id, criteriosPeriodo).toFixed(1)}</td>
+                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" inputmode="decimal" min="0" max="10" step="any" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar ? "" : "disabled"} /></td>`).join("")}
+                  <td class="text-center font-semibold" id="calFinal_${a.id}">${finalMostrar(a.id, criteriosPeriodo)}</td>
                 </tr>`).join("")}
             </tbody>
           </table>
@@ -4981,7 +5016,7 @@ function renderCalificaciones(main) {
               res.innerHTML = `
                 <p class="text-xs mb-1" style="color:#6C7B8A">Clases impartidas en el rango: <strong>${r.sesiones}</strong></p>
                 <div style="overflow-x:auto"><table class="w-full text-xs"><thead><tr style="color:#6C7B8A; text-align:left"><th>Alumno</th><th>Asist.</th><th>Faltas</th><th>Justif.</th><th>Calif.</th></tr></thead><tbody>
-                ${r.filas.map(f => `<tr style="border-top:1px solid #E1DED5"><td>${escHtml(f.nombre)}</td><td>${f.asistencias}</td><td>${f.faltas}</td><td>${f.justificadas}</td><td><strong>${f.calif == null ? "—" : f.calif.toFixed(1)}</strong></td></tr>`).join("")}
+                ${r.filas.map(f => `<tr style="border-top:1px solid #E1DED5"><td>${escHtml(f.nombre)}</td><td>${f.asistencias}</td><td>${f.faltas}</td><td>${f.justificadas}</td><td><strong>${f.calif == null ? "—" : f.calif}</strong></td></tr>`).join("")}
                 </tbody></table></div>
                 <div id="asMsg" class="mt-2"></div>
                 <button id="asAplicar" type="button" class="mt-1 px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Aplicar calificaciones al criterio "${escHtml(crit.nombre)}"</button>`;
@@ -5002,17 +5037,33 @@ function renderCalificaciones(main) {
         if (btnGuardar) btnGuardar.addEventListener("click", async () => {
           const msg = document.getElementById("calGuardarMsg");
           msg.innerHTML = "";
-          const inputs = document.querySelectorAll(".calValorInput");
-          if ([...inputs].some(i => i.value !== "" && (Number(i.value) < 0 || Number(i.value) > 10))) {
-            msg.innerHTML = errBox("Todas las calificaciones deben estar entre 0 y 10."); return;
+          const inputs = [...document.querySelectorAll(".calValorInput")].filter(i => i.value !== "");
+          if (inputs.some(i => isNaN(Number(i.value)) || Number(i.value) > 10)) {
+            msg.innerHTML = errBox("Todas las calificaciones deben ser números del 5 al 10."); return;
           }
-          const filas = [...inputs].filter(i => i.value !== "").map(i => ({
-            criterio_id: i.dataset.criterio, alumno_id: i.dataset.alumno, valor: Number(i.value),
-          }));
-          if (filas.length === 0) { msg.innerHTML = errBox("No hay calificaciones para guardar."); return; }
+          // Reglas de Normatividad: mínimo 5 y sin decimales (si hay decimal, el profesor elige el entero correcto).
+          let subidasA5 = 0;
+          btnGuardar.disabled = true;
+          for (const i of inputs) {
+            let v = Number(i.value);
+            if (v < 5) { v = 5; subidasA5++; }
+            else if (Math.abs(v - Math.round(v)) > 1e-9) {
+              const al = alumnos.find(x => x.id === i.dataset.alumno), cr = criteriosPeriodo.find(x => x.id === i.dataset.criterio);
+              const el = await elegirCalificacionEntera(`${al ? al.nombres + " " + al.apellido_paterno : "Alumno"} · ${cr ? cr.nombre : "criterio"}`, i.value, Math.floor(v), Math.ceil(v));
+              if (el === null) { btnGuardar.disabled = false; msg.innerHTML = errBox("Guardado cancelado: no se asentó ninguna calificación. Corrige los decimales y vuelve a guardar."); return; }
+              v = el;
+            }
+            i.value = String(v);
+            valoresCache[i.dataset.alumno] = valoresCache[i.dataset.alumno] || {};
+            valoresCache[i.dataset.alumno][i.dataset.criterio] = v;
+            const elF = document.getElementById(`calFinal_${i.dataset.alumno}`); if (elF) elF.textContent = finalMostrar(i.dataset.alumno, criteriosPeriodo);
+          }
+          const filas = inputs.map(i => ({ criterio_id: i.dataset.criterio, alumno_id: i.dataset.alumno, valor: Number(i.value) }));
+          if (filas.length === 0) { btnGuardar.disabled = false; msg.innerHTML = errBox("No hay calificaciones para guardar."); return; }
           const { error } = await sb.from("calificaciones").upsert(filas, { onConflict: "criterio_id,alumno_id" });
+          btnGuardar.disabled = false;
           if (error) { msg.innerHTML = errBox(error.message); return; }
-          msg.innerHTML = okBox("Calificaciones guardadas.");
+          msg.innerHTML = okBox("Calificaciones guardadas." + (subidasA5 ? ` ${subidasA5} calificación(es) menor(es) a 5 se asentaron como 5, conforme a la normatividad.` : ""));
         });
 
         document.querySelectorAll(".calValorInput").forEach(inp => inp.addEventListener("input", () => {
@@ -5023,9 +5074,9 @@ function renderCalificaciones(main) {
           }
           const alumnoId = inp.dataset.alumno;
           valoresCache[alumnoId] = valoresCache[alumnoId] || {};
-          valoresCache[alumnoId][inp.dataset.criterio] = Number(inp.value) || 0;
+          if (inp.value === "") delete valoresCache[alumnoId][inp.dataset.criterio]; else valoresCache[alumnoId][inp.dataset.criterio] = Number(inp.value) || 0;
           const elFinal = document.getElementById(`calFinal_${alumnoId}`);
-          if (elFinal) elFinal.textContent = calcularFinal(alumnoId, criteriosPeriodo).toFixed(1);
+          if (elFinal) elFinal.textContent = finalMostrar(alumnoId, criteriosPeriodo);
         }));
       }
     }
@@ -5223,13 +5274,13 @@ function renderBoletas(main) {
       const crits = criterios.filter(c => c.asignacion_id === asigId && c.periodo === periodo);
       const conValor = crits.filter(c => valores.has(c.id));
       if (conValor.length === 0) return null;
-      return crits.reduce((t, c) => t + (valores.has(c.id) ? valores.get(c.id) * Number(c.ponderacion) / 100 : 0), 0);
+      return calOficial(crits.reduce((t, c) => t + (valores.has(c.id) ? valores.get(c.id) * Number(c.ponderacion) / 100 : 0), 0));
     }
 
     const filas = asignaciones.map(a => {
       const notas = periodos.map(p => calificacionPeriodo(a.id, p));
       const capturadas = notas.filter(n => n != null);
-      const promedio = capturadas.length ? capturadas.reduce((s, n) => s + n, 0) / capturadas.length : null;
+      const promedio = capturadas.length ? calOficial(capturadas.reduce((s, n) => s + n, 0) / capturadas.length) : null;
       return { materia: a.materias.nombre, notas, promedio };
     }).sort((x, y) => x.materia.localeCompare(y.materia, "es"));
 
@@ -5271,8 +5322,8 @@ function renderBoletas(main) {
             ${filas.map(f => `
               <tr>
                 <td class="p-2" style="border:1px solid #D5DAE8">${escHtml(f.materia)}</td>
-                ${f.notas.map(n => `<td class="p-2 text-center" style="border:1px solid #D5DAE8">${fmt(n)}</td>`).join("")}
-                <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(f.promedio)}</td>
+                ${f.notas.map(n => `<td class="p-2 text-center" style="border:1px solid #D5DAE8">${fmtEntero(n)}</td>`).join("")}
+                <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmtEntero(f.promedio)}</td>
               </tr>`).join("")}
             <tr style="background:#F4F1EB">
               <td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${periodos.length + 1}">Promedio general</td>
@@ -5280,7 +5331,7 @@ function renderBoletas(main) {
             </tr>
           </tbody>
         </table>
-        <p class="text-xs mt-2" style="color:#6C7B8A">${prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación capturada.</p>`}
+        <p class="text-xs mt-2" style="color:#6C7B8A">${prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 5 a 10. "—" indica que aún no hay calificación capturada.</p>`}
         <div class="ib-pie"><div class="flex justify-around mt-10 text-xs text-center" style="color:#1C2B3A">
           <div style="border-top:1px solid #1C2B3A; padding-top:4px; width:40%">${escHtml((nivel === "Preparatoria" ? inst.director_preparatoria : inst.director_secundaria) || inst.director_nombre || "")}<br>Dirección</div>
           <div style="border-top:1px solid #1C2B3A; padding-top:4px; width:40%">Sello del plantel</div>
@@ -6053,12 +6104,12 @@ async function calificacionesDeAlumno(alumnoId, insc) {
   const notaPeriodo = (asigId, p) => {
     const cr = criterios.filter(c => c.asignacion_id === asigId && c.periodo === p);
     if (!cr.some(c => valores.has(c.id))) return null;
-    return cr.reduce((t, c) => t + (valores.has(c.id) ? valores.get(c.id) * Number(c.ponderacion) / 100 : 0), 0);
+    return calOficial(cr.reduce((t, c) => t + (valores.has(c.id) ? valores.get(c.id) * Number(c.ponderacion) / 100 : 0), 0));
   };
   const filas = asignaciones.map(a => {
     const notas = periodos.map(p => notaPeriodo(a.id, p));
     const cap = notas.filter(n => n != null);
-    return { materia: a.materias.nombre, notas, promedio: cap.length ? cap.reduce((s, n) => s + n, 0) / cap.length : null };
+    return { materia: a.materias.nombre, notas, promedio: cap.length ? calOficial(cap.reduce((s, n) => s + n, 0) / cap.length) : null };
   }).sort((x, y) => x.materia.localeCompare(y.materia, "es"));
   const conProm = filas.filter(f => f.promedio != null);
   return { prefijo, periodos, filas, general: conProm.length ? conProm.reduce((s, f) => s + f.promedio, 0) / conProm.length : null };
@@ -6143,10 +6194,10 @@ function htmlOficioInterno(tipo, ctx, op, folio, fechaEmision, calif) {
             ${calif.periodos.map((p, i) => `<th class="p-2" style="border:1px solid #D5DAE8">${calif.prefijo === "Parcial" ? "P" : "B"}${i + 1}</th>`).join("")}
             <th class="p-2" style="border:1px solid #D5DAE8">Promedio</th></tr></thead>
           <tbody>${calif.filas.map(f => `<tr><td class="p-2" style="border:1px solid #D5DAE8">${escHtml(f.materia)}</td>
-            ${f.notas.map(n => `<td class="p-2 text-center" style="border:1px solid #D5DAE8">${fmt(n)}</td>`).join("")}
-            <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(f.promedio)}</td></tr>`).join("")}
+            ${f.notas.map(n => `<td class="p-2 text-center" style="border:1px solid #D5DAE8">${fmtEntero(n)}</td>`).join("")}
+            <td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmtEntero(f.promedio)}</td></tr>`).join("")}
             <tr style="background:#F4F1EB"><td class="p-2 font-bold" style="border:1px solid #D5DAE8" colspan="${calif.periodos.length + 1}">Promedio general</td><td class="p-2 text-center font-bold" style="border:1px solid #D5DAE8">${fmt(calif.general)}</td></tr></tbody></table>
-        <p class="text-xs mb-3" style="color:#6C7B8A">${calif.prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 0 a 10. "—" indica que aún no hay calificación registrada.</p>`;
+        <p class="text-xs mb-3" style="color:#6C7B8A">${calif.prefijo === "Parcial" ? "P1–P5: parciales" : "B1–B5: bimestres"}. Escala de 5 a 10. "—" indica que aún no hay calificación registrada.</p>`;
     return `${cabecera}<h3 class="text-base font-bold text-center mb-8 mt-4" style="color:#1E3A8A">CONSTANCIA DE ESTUDIOS CON CALIFICACIONES</h3>${dirigido}
       <p class="text-sm mb-3" style="${estilo}">El que suscribe, ${quien}, <strong>HACE CONSTAR</strong> que ${datosAlumno}, se encuentra ${g.inscrito} en este plantel como ${g.regular} y cursando <strong>${escHtml(grado)}</strong> de <strong>${escHtml(nivel)}</strong> durante el ciclo escolar <strong>${escHtml(ciclo)}</strong>, y que a la fecha cuenta con las siguientes calificaciones:</p>
       ${tabla}${cierre}`;
