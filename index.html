@@ -5078,6 +5078,34 @@ function renderCalificaciones(main) {
           const elFinal = document.getElementById(`calFinal_${alumnoId}`);
           if (elFinal) elFinal.textContent = finalMostrar(alumnoId, criteriosPeriodo);
         }));
+
+        // Normatividad en tiempo real: al salir de la casilla (Tab, Enter o tocar otra) se corrige de inmediato.
+        let validandoCal = false;
+        document.querySelectorAll(".calValorInput").forEach(inp => inp.addEventListener("change", async () => {
+          if (validandoCal || inp.value === "") return;
+          let v = Number(inp.value);
+          if (isNaN(v)) { inp.value = ""; return; }
+          validandoCal = true;
+          try {
+            if (v < 5) v = 5;
+            else if (Math.abs(v - Math.round(v)) > 1e-9) {
+              const al = alumnos.find(x => x.id === inp.dataset.alumno), cr = criteriosPeriodo.find(x => x.id === inp.dataset.criterio);
+              const el = await elegirCalificacionEntera(`${al ? al.nombres + " " + al.apellido_paterno : "Alumno"} · ${cr ? cr.nombre : "criterio"}`, inp.value, Math.floor(v), Math.ceil(v));
+              if (el === null) {
+                inp.value = "";
+                const ac = inp.dataset.alumno; if (valoresCache[ac]) delete valoresCache[ac][inp.dataset.criterio];
+                const ef = document.getElementById(`calFinal_${ac}`); if (ef) ef.textContent = finalMostrar(ac, criteriosPeriodo);
+                inp.focus(); return;
+              }
+              v = el;
+            }
+            inp.value = String(v);
+            const ac = inp.dataset.alumno;
+            valoresCache[ac] = valoresCache[ac] || {};
+            valoresCache[ac][inp.dataset.criterio] = v;
+            const ef = document.getElementById(`calFinal_${ac}`); if (ef) ef.textContent = finalMostrar(ac, criteriosPeriodo);
+          } finally { validandoCal = false; }
+        }));
       }
     }
 
