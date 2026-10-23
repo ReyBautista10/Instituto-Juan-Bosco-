@@ -4750,7 +4750,7 @@ function renderCalificaciones(main) {
     const nombres = new Map((perfs || []).map(p => [p.id, p.nombre_completo]));
     caja.innerHTML = `
       <div class="p-4 rounded-xl border mb-4" style="background:#FFF8E6; border-color:#E8D49A">
-        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Solicitudes para modificar criterios (${data.length})</p>
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Solicitudes para modificar criterios o calificaciones (${data.length})</p>
         ${data.map(s => {
           const a = s.profesor_materias_grupos;
           const clase = a && a.materias && a.grupos ? `${a.materias.nombre} — ${a.grupos.grados?.nombre || ""} "${a.grupos.letra}"` : "Clase";
@@ -4766,7 +4766,7 @@ function renderCalificaciones(main) {
     caja.querySelectorAll(".solRes").forEach(b => b.addEventListener("click", async () => {
       const s = data.find(x => x.id === b.dataset.id);
       const autorizar = b.dataset.ok === "1";
-      if (!confirm(autorizar ? "¿Autorizar al profesor a modificar estos criterios?" : "¿Rechazar la solicitud?")) return;
+      if (!confirm(autorizar ? "¿Autorizar al profesor a modificar los criterios y calificaciones de este periodo?" : "¿Rechazar la solicitud?")) return;
       const { error: e1 } = await sb.from("solicitudes_criterios").update({
         estado: autorizar ? "Autorizada" : "Rechazada", resuelto_por: state.perfil.id, resuelto_en: new Date().toISOString(),
       }).eq("id", s.id);
@@ -4836,12 +4836,19 @@ function renderCalificaciones(main) {
 
     const idsCriterios = criterios.map(c => c.id);
     const valoresCache = {};
+    const guardadasBD = new Set(); // calificaciones ya guardadas: quedan bloqueadas salvo autorización del director
     if (idsCriterios.length > 0) {
       const { data: calsExistentes } = await sb.from("calificaciones").select("alumno_id, criterio_id, valor").in("criterio_id", idsCriterios);
       (calsExistentes || []).forEach(c => {
         valoresCache[c.alumno_id] = valoresCache[c.alumno_id] || {};
         valoresCache[c.alumno_id][c.criterio_id] = Number(c.valor);
+        guardadasBD.add(c.alumno_id + "|" + c.criterio_id);
       });
+    }
+
+    function estaBloqueada(alumnoId, criterioId) {
+      const c = criterios.find(x => x.id === criterioId);
+      return guardadasBD.has(alumnoId + "|" + criterioId) && !(c && estadosPeriodo[c.periodo] === "Autorizado");
     }
 
     function obtenerValor(alumnoId, criterioId) {
@@ -4876,7 +4883,7 @@ function renderCalificaciones(main) {
       const sumaPonderacion = criteriosPeriodo.reduce((s, c) => s + Number(c.ponderacion), 0);
       const confirmado = estadosPeriodo[periodoActivo] === "Confirmado";
       const puedeEditarCriterios = puedeEditar && !confirmado;
-      const puedeCapturar = puedeEditar && confirmado;
+      const puedeCapturar = puedeEditar && (confirmado || estadosPeriodo[periodoActivo] === "Autorizado");
 
       cont.innerHTML = `
         ${!puedeEditar ? `<div class="text-xs mb-3 p-2 rounded-lg" style="background:#EEF2FB; color:#1E3A8A">Solo consulta: los criterios y las calificaciones los captura el profesor de la clase.${confirmado ? "" : " Los criterios de este periodo aún no están confirmados."}</div>` : ""}
@@ -4902,7 +4909,7 @@ function renderCalificaciones(main) {
           <button id="calConfirmarBtn" class="mt-2 px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Confirmar criterios</button>
           <p class="text-xs mt-1" style="color:#6C7B8A">Debes confirmar los criterios (suma 100%) para capturar calificaciones. Después solo se pueden cambiar con autorización de un supervisor.</p>` : ""}` : (puedeEditar ? `
           <div class="mt-2 p-2 rounded-lg text-xs" style="background:#F4F1EB; color:#1E3A8A">
-            🔒 Criterios confirmados.
+            🔒 Criterios confirmados y calificaciones guardadas bloqueadas. Para modificarlos se necesita autorización del director; los alumnos sin calificación sí se pueden capturar.
             ${solicitudesPend.has(periodoActivo) ? "Hay una solicitud de modificación pendiente de autorización." : `<button id="calSolicitarBtn" class="ml-1 px-2 py-1 rounded-lg font-semibold" style="background:#1E3A8A; color:#fff">Solicitar modificación</button>`}
           </div>
           <div id="calCriterioMsg" class="mt-1"></div>` : "")}
@@ -4932,7 +4939,7 @@ function renderCalificaciones(main) {
               ${alumnos.map(a => `
                 <tr style="color:#1C2B3A">
                   <td class="py-1 pr-2">${a.nombres} ${a.apellido_paterno}</td>
-                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" inputmode="decimal" min="0" max="10" step="any" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar ? "" : "disabled"} /></td>`).join("")}
+                  ${criteriosPeriodo.map(c => `<td class="text-center py-1"><input type="number" inputmode="decimal" min="0" max="10" step="any" class="calValorInput w-14 px-1 py-1 rounded text-xs border text-center" data-alumno="${a.id}" data-criterio="${c.id}" value="${obtenerValor(a.id, c.id) ?? ""}" ${puedeCapturar && !estaBloqueada(a.id, c.id) ? "" : "disabled"} ${puedeCapturar && estaBloqueada(a.id, c.id) ? 'title="Calificación guardada: solo se modifica con autorización del director" style="background:#F4F1EB"' : ""} /></td>`).join("")}
                   <td class="text-center font-semibold" id="calFinal_${a.id}">${finalMostrar(a.id, criteriosPeriodo)}</td>
                 </tr>`).join("")}
             </tbody>
@@ -4982,7 +4989,7 @@ function renderCalificaciones(main) {
 
         const btnSolicitar = document.getElementById("calSolicitarBtn");
         if (btnSolicitar) btnSolicitar.addEventListener("click", async () => {
-          const motivo = prompt("Explica por qué necesitas modificar los criterios de " + periodoActivo + ":");
+          const motivo = prompt("Explica por qué necesitas modificar los criterios o calificaciones de " + periodoActivo + ":");
           if (!motivo || !motivo.trim()) return;
           const { error } = await sb.from("solicitudes_criterios").insert({ asignacion_id: asignacion.id, periodo: periodoActivo, motivo: motivo.trim() });
           if (error) { document.getElementById("calCriterioMsg").innerHTML = errBox(error.message); return; }
@@ -5037,12 +5044,15 @@ function renderCalificaciones(main) {
                 <div id="asMsg" class="mt-2"></div>
                 <button id="asAplicar" type="button" class="mt-1 px-3 py-1.5 rounded-lg text-xs font-bold" style="background:#3F7A5E; color:#fff">Aplicar calificaciones al criterio "${escHtml(crit.nombre)}"</button>`;
               document.getElementById("asAplicar").addEventListener("click", async () => {
-                const filas = r.filas.filter(f => f.calif != null).map(f => ({ criterio_id: crit.id, alumno_id: f.alumno_id, valor: f.calif }));
+                const conCalif = r.filas.filter(f => f.calif != null);
+                const filas = conCalif.filter(f => !estaBloqueada(f.alumno_id, crit.id)).map(f => ({ criterio_id: crit.id, alumno_id: f.alumno_id, valor: f.calif }));
+                const omitidas = conCalif.length - filas.length;
+                if (filas.length === 0) { document.getElementById("asMsg").innerHTML = errBox("Todas las calificaciones de este criterio ya están guardadas y bloqueadas. Para modificarlas solicita autorización al director."); return; }
                 const { error } = await sb.from("calificaciones").upsert(filas, { onConflict: "criterio_id,alumno_id" });
                 if (error) { document.getElementById("asMsg").innerHTML = errBox(escHtml(error.message)); return; }
-                filas.forEach(f => { valoresCache[f.alumno_id] = valoresCache[f.alumno_id] || {}; valoresCache[f.alumno_id][crit.id] = f.valor; });
+                filas.forEach(f => { valoresCache[f.alumno_id] = valoresCache[f.alumno_id] || {}; valoresCache[f.alumno_id][crit.id] = f.valor; guardadasBD.add(f.alumno_id + "|" + crit.id); });
                 pintar();
-                document.getElementById("calGuardarMsg") && (document.getElementById("calGuardarMsg").innerHTML = okBox("Calificación de asistencia calculada y guardada."));
+                document.getElementById("calGuardarMsg") && (document.getElementById("calGuardarMsg").innerHTML = okBox("Calificación de asistencia calculada y guardada." + (omitidas ? ` Se respetaron ${omitidas} calificación(es) ya guardadas (bloqueadas).` : "")));
               });
             } catch (e) { res.innerHTML = errBox(escHtml(e.message)); }
           });
@@ -5053,7 +5063,7 @@ function renderCalificaciones(main) {
         if (btnGuardar) btnGuardar.addEventListener("click", async () => {
           const msg = document.getElementById("calGuardarMsg");
           msg.innerHTML = "";
-          const inputs = [...document.querySelectorAll(".calValorInput")].filter(i => i.value !== "");
+          const inputs = [...document.querySelectorAll(".calValorInput")].filter(i => i.value !== "" && !i.disabled);
           if (inputs.some(i => isNaN(Number(i.value)) || Number(i.value) > 10)) {
             msg.innerHTML = errBox("Todas las calificaciones deben ser números del 5 al 10."); return;
           }
@@ -5093,11 +5103,13 @@ function renderCalificaciones(main) {
             const elF = document.getElementById(`calFinal_${i.dataset.alumno}`); if (elF) elF.textContent = finalMostrar(i.dataset.alumno, criteriosPeriodo);
           }
           const filas = inputs.map(i => ({ criterio_id: i.dataset.criterio, alumno_id: i.dataset.alumno, valor: Number(i.value) }));
-          if (filas.length === 0) { btnGuardar.disabled = false; msg.innerHTML = errBox("No hay calificaciones para guardar."); return; }
+          if (filas.length === 0) { btnGuardar.disabled = false; msg.innerHTML = errBox("No hay calificaciones nuevas para guardar."); return; }
           const { error } = await sb.from("calificaciones").upsert(filas, { onConflict: "criterio_id,alumno_id" });
           btnGuardar.disabled = false;
           if (error) { msg.innerHTML = errBox(error.message); return; }
-          msg.innerHTML = okBox("Calificaciones guardadas." + (subidasA5 ? ` ${subidasA5} calificación(es) menor(es) a 5 se asentaron como 5, conforme a la normatividad.` : ""));
+          const autorizadoAhora = estadosPeriodo[periodoActivo] === "Autorizado";
+          inputs.forEach(i => { guardadasBD.add(i.dataset.alumno + "|" + i.dataset.criterio); if (!autorizadoAhora) { i.disabled = true; i.style.background = "#F4F1EB"; i.title = "Calificación guardada: solo se modifica con autorización del director"; } });
+          msg.innerHTML = okBox("Calificaciones guardadas." + (autorizadoAhora ? "" : " Las calificaciones guardadas quedaron bloqueadas; para cambiarlas se requiere autorización del director.") + (subidasA5 ? ` ${subidasA5} calificación(es) menor(es) a 5 se asentaron como 5, conforme a la normatividad.` : ""));
         });
 
         document.querySelectorAll(".calValorInput").forEach(inp => inp.addEventListener("input", () => {
