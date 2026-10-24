@@ -1435,6 +1435,7 @@ function renderAlumnos(main) {
     <h2 class="text-lg font-bold mb-4" style="color:#1E3A8A">Alumnos y Grupos</h2>
     <div class="flex gap-1 mb-4">
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="ciclos">Ciclos Escolares</button>
+      <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="grados">Grados</button>
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="grupos">Grupos</button>
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="alumnos">Alumnos</button>
       <button class="alTabBtn px-3 py-1.5 rounded-lg text-sm font-semibold" data-tab="periodos">Periodos de evaluación</button>
@@ -1461,6 +1462,7 @@ function renderAlumnos(main) {
   function cargarTab() {
     const cont = document.getElementById("alContenido");
     if (tabActivo === "ciclos") return renderCiclos(cont);
+    if (tabActivo === "grados") return renderGrados(cont);
     if (tabActivo === "grupos") return renderGrupos(cont);
     if (tabActivo === "alumnos") return renderAlumnosTab(cont);
     if (tabActivo === "periodos") return renderPeriodosEval(cont);
@@ -1598,6 +1600,90 @@ function renderAlumnos(main) {
     }));
   }
 
+  // ---------- Grados ----------
+  // Catálogo fijo: el usuario solo elige de esta lista, así los nombres nunca se escriben a mano.
+  const CATALOGO_GRADOS = {
+    Secundaria: [
+      { nombre: "1ER GRADO", numero: 1 }, { nombre: "2º GRADO", numero: 2 }, { nombre: "3ER GRADO", numero: 3 },
+    ],
+    Preparatoria: [
+      { nombre: "1ER SEMESTRE", numero: 1 }, { nombre: "2º SEMESTRE", numero: 2 }, { nombre: "3ER SEMESTRE", numero: 3 },
+      { nombre: "4º SEMESTRE", numero: 4 }, { nombre: "5º SEMESTRE", numero: 5 }, { nombre: "6º SEMESTRE", numero: 6 },
+    ],
+  };
+  async function renderGrados(cont) {
+    cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
+    const { data, error } = await sb.from("grados").select("*").order("nivel").order("numero");
+    if (error) { cont.innerHTML = errBox(escHtml(error.message)); return; }
+    const existentes = data || [];
+    let nivel = "Secundaria";
+    const clave = (n, nombre) => n + "|" + String(nombre).trim().toUpperCase();
+    const ya = new Set(existentes.map(g => clave(g.nivel, g.nombre)));
+
+    function pintar() {
+      const cat = CATALOGO_GRADOS[nivel];
+      cont.innerHTML = `
+        <div class="max-w-lg">
+          <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Agregar grados</p>
+            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
+            <select id="gdNivel" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+              <option ${nivel === "Secundaria" ? "selected" : ""}>Secundaria</option>
+              <option ${nivel === "Preparatoria" ? "selected" : ""}>Preparatoria</option>
+            </select>
+            ${nivel === "Preparatoria" ? `
+            <p class="text-xs mb-1" style="color:#6C7B8A">Selecciona el juego de grados que se usa en el ciclo:</p>
+            <div class="flex gap-2 flex-wrap mb-2">
+              <button type="button" id="gdNones" class="px-2 py-1 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Ciclo: 1ER, 3ER y 5º semestre</button>
+              <button type="button" id="gdPares" class="px-2 py-1 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Intersemestral: 2º, 4º y 6º semestre</button>
+            </div>` : ""}
+            <div class="space-y-1 mb-2">
+              ${cat.map(c => { const existe = ya.has(clave(nivel, c.nombre)); return `
+              <label class="flex items-center gap-2 text-sm" style="color:${existe ? "#6C7B8A" : "#1C2B3A"}">
+                <input type="checkbox" class="gdChk" value="${c.numero}" ${existe ? "checked disabled" : ""} /> ${c.nombre}${existe ? " (ya registrado)" : ""}
+              </label>`; }).join("")}
+            </div>
+            <div id="gdMsg" class="mb-2"></div>
+            <button id="gdAgregar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar grados seleccionados</button>
+          </div>
+
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Grados registrados</p>
+          ${existentes.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Aún no hay grados registrados.</p>` : ["Secundaria", "Preparatoria"].map(nv => {
+            const lst = existentes.filter(g => g.nivel === nv);
+            return lst.length ? `<p class="text-xs font-semibold mt-2 mb-1" style="color:#6C7B8A">${nv}</p>` + lst.map(g => `
+              <div class="flex items-center justify-between p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">
+                <span>${escHtml(g.nombre)}</span>
+                <button class="gdDel px-2 py-1 rounded-lg text-xs font-semibold" data-id="${g.id}" style="background:#F5E4E1; color:#B5453A">Quitar</button>
+              </div>`).join("") : "";
+          }).join("")}
+        </div>`;
+
+      document.getElementById("gdNivel").addEventListener("change", e => { nivel = e.target.value; pintar(); });
+      const marcar = nums => document.querySelectorAll(".gdChk").forEach(c => { if (!c.disabled) c.checked = nums.includes(Number(c.value)); });
+      const bn = document.getElementById("gdNones"), bp = document.getElementById("gdPares");
+      if (bn) bn.addEventListener("click", () => marcar([1, 3, 5]));
+      if (bp) bp.addEventListener("click", () => marcar([2, 4, 6]));
+
+      document.getElementById("gdAgregar").addEventListener("click", async () => {
+        const msg = document.getElementById("gdMsg");
+        const nums = [...document.querySelectorAll(".gdChk")].filter(c => c.checked && !c.disabled).map(c => Number(c.value));
+        if (nums.length === 0) { msg.innerHTML = errBox("Selecciona al menos un grado que aún no esté registrado."); return; }
+        const filas = CATALOGO_GRADOS[nivel].filter(c => nums.includes(c.numero)).map(c => ({ nombre: c.nombre, nivel, numero: c.numero }));
+        const { error: e } = await sb.from("grados").insert(filas);
+        if (e) { msg.innerHTML = errBox(escHtml(e.message)); return; }
+        renderGrados(cont);
+      });
+
+      document.querySelectorAll(".gdDel").forEach(b => b.addEventListener("click", async () => {
+        if (!confirm("¿Quitar este grado?")) return;
+        const { error: e } = await sb.from("grados").delete().eq("id", b.dataset.id);
+        if (e) { document.getElementById("gdMsg").innerHTML = errBox(/foreign key|violates/i.test(e.message) ? "No se puede quitar: ya tiene grupos creados." : escHtml(e.message)); return; }
+        renderGrados(cont);
+      }));
+    }
+    pintar();
+  }
+
   // ---------- Grupos ----------
   async function renderGrupos(cont) {
     cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
@@ -1613,7 +1699,7 @@ function renderAlumnos(main) {
     const profesores = profesRes.data || [];
 
     if (todosGrados.length === 0) {
-      cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay grados capturados. Corre el SQL de grados que te compartimos.</p>`;
+      cont.innerHTML = `<p class="text-sm" style="color:#6C7B8A">No hay grados registrados. Primero agrégalos en la pestaña "Grados".</p>`;
       return;
     }
 
