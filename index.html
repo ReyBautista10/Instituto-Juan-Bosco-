@@ -3618,50 +3618,110 @@ function renderCatedraticos(main) {
   }
 
   // ---------- Materias ----------
-  async function renderMaterias(cont) {
+  // Plan de estudios de Preparatoria por semestre (nombres tal cual el plan oficial, en mayúsculas).
+  const PLAN_PREPA = {
+    1: ["LA MATERIA Y SUS INTERACCIONES", "CIENCIAS SOCIALES I", "CULTURA DIGITAL I", "PENSAMIENTO MATEMÁTICO I", "LENGUA Y COMUNICACIÓN I", "INGLÉS I", "HUMANIDADES I", "LABORATORIO DE INVESTIGACIÓN", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
+    2: ["CONSERVACIÓN DE LA ENERGÍA Y SUS INTERACCIONES CON LA MATERIA", "CIENCIAS SOCIALES II", "CULTURA DIGITAL II", "PENSAMIENTO MATEMÁTICO II", "LENGUA Y COMUNICACIÓN II", "INGLÉS II", "HUMANIDADES II", "TALLER DE CIENCIAS I", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
+    3: ["ECOSISTEMAS: INTERACCIONES, ENERGÍA Y DINÁMICA", "PENSAMIENTO MATEMÁTICO III", "LENGUA Y COMUNICACIÓN III", "INGLÉS III", "HUMANIDADES III", "TALLER DE CIENCIAS II", "FONÉTICA Y FONOLOGÍA DEL INGLÉS", "PRINCIPIOS BÁSICOS DE LA INTERPRETACIÓN Y LA TRADUCCIÓN", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
+    4: ["REACCIONES QUÍMICAS: CONSERVACIÓN DE LA MATERIA EN LA FORMACIÓN DE NUEVAS SUSTANCIAS", "CONCIENCIA HISTÓRICA I PERSPECTIVAS DEL MÉXICO ANTIGUO. LOS CONTEXTOS GLOBALES", "TALLER DE CULTURA DIGITAL", "TEMAS SELECTOS DE MATEMÁTICAS I", "PENSAMIENTO LITERARIO", "INGLÉS IV", "ESPACIO Y SOCIEDAD", "CIENCIAS SOCIALES III", "ELEMENTOS DE LA INTERPRETACIÓN Y LA TRADUCCIÓN", "INTRODUCCIÓN A LA GRAMÁTICA DEL IDIOMA INGLÉS", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
+    5: ["LA ENERGÍA EN LOS PROCESOS DE LA VIDA DIARIA", "CONCIENCIA HISTÓRICA II. MÉXICO DURANTE EL EXPANSIONISMO CAPITALISTA", "ETIMOLOGÍAS GRECOLATINAS I", "CÁLCULO DIFERENCIAL", "PROBABILIDAD Y ESTADÍSTICA I", "CIENCIAS DE LA SALUD I", "ESTRATEGIAS DE LECTURA APLICADAS A LA INTERPRETACIÓN Y LA TRADUCCIÓN", "APLICACIÓN DE LA GRAMÁTICA INGLESA Y FONOLÓGICA", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
+    6: ["ORGANISMOS: ESTRUCTURAS Y PROCESOS HERENCIA Y EVOLUCIÓN BIOLÓGICA", "CONCIENCIA HISTÓRICA III. LA REALIDAD ACTUAL EN PERSPECTIVA HISTÓRICA", "TEMAS SELECTOS DE MATEMÁTICAS II", "ETIMOLOGÍAS GRECOLATINAS II", "CÁLCULO INTEGRAL", "PROBABILIDAD Y ESTADÍSTICA II", "CIENCIAS DE LA SALUD II", "PRODUCCIÓN ORAL", "PRODUCCIÓN DE TEXTOS", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
+  };
+  async function renderMaterias(cont, estado) {
+    estado = estado || { nivel: "Secundaria", ciclo: null };
     cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
-    const { data, error } = await sb.from("materias").select("*").order("nivel").order("nombre");
-    if (error) { cont.innerHTML = errBox(error.message); return; }
+    const [mRes, cRes, gRes] = await Promise.all([
+      sb.from("materias").select("*").order("nombre"),
+      sb.from("ciclos_escolares").select("id, nombre, nivel, activo, fecha_inicio").order("fecha_inicio", { ascending: false }),
+      sb.from("grados").select("id, numero, ciclo_escolar_id"),
+    ]);
+    if (mRes.error) { cont.innerHTML = errBox(escHtml(mRes.error.message)); return; }
+    const materias = mRes.data || [], ciclos = (cRes.data || []).filter(c => c.nivel === estado.nivel), grados = gRes.data || [];
+    if (!estado.ciclo || !ciclos.find(c => c.id === estado.ciclo)) { const a = ciclos.find(c => c.activo) || ciclos[0]; estado.ciclo = a ? a.id : null; }
+    const selNivel = `
+      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
+      <select id="matNivel" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+        <option ${estado.nivel === "Secundaria" ? "selected" : ""}>Secundaria</option>
+        <option ${estado.nivel === "Preparatoria" ? "selected" : ""}>Preparatoria</option>
+      </select>`;
+    const enlazarNivel = () => document.getElementById("matNivel").addEventListener("change", e => { estado.nivel = e.target.value; estado.ciclo = null; renderMaterias(cont, estado); });
 
-    const materias = data || [];
+    if (!estado.ciclo) {
+      cont.innerHTML = `<div class="max-w-lg"><div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">${selNivel}
+        <p class="text-sm" style="color:#6C7B8A">No hay ningún ciclo escolar de ${estado.nivel}. Las materias pertenecen a un ciclo: créalo primero en "Alumnos y Grupos → Ciclos Escolares".</p></div></div>`;
+      enlazarNivel(); return;
+    }
+    const delCiclo = materias.filter(m => m.ciclo_escolar_id === estado.ciclo).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    const numerosCiclo = [...new Set(grados.filter(g => g.ciclo_escolar_id === estado.ciclo).map(g => Number(g.numero)))].sort();
+    const otrosCiclos = ciclos.filter(c => c.id !== estado.ciclo && materias.some(m => m.ciclo_escolar_id === c.id));
 
     cont.innerHTML = `
       <div class="max-w-lg">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nueva materia</p>
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Materias del ciclo</p>
+          ${selNivel}
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar</label>
+          <select id="matCiclo" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${ciclos.map(c => `<option value="${c.id}" ${c.id === estado.ciclo ? "selected" : ""}>${escHtml(c.nombre)}${c.activo ? " (Activo)" : ""}</option>`).join("")}
+          </select>
           <div class="flex gap-2">
             <input id="matNombre" placeholder="Nombre de la materia" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
-            <select id="matNivel" class="px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
-              <option value="Secundaria">Secundaria</option>
-              <option value="Preparatoria">Preparatoria</option>
-            </select>
+            <button id="matGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
           </div>
           <div id="matMsg" class="mt-2"></div>
-          <button id="matGuardar" class="mt-2 px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
         </div>
 
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Secundaria</p>
-            ${materias.filter(m => m.nivel === "Secundaria").map(m => `<div class="p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">${m.nombre}</div>`).join("") || `<p class="text-xs" style="color:#6C7B8A">Sin materias.</p>`}
-          </div>
-          <div>
-            <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Preparatoria</p>
-            ${materias.filter(m => m.nivel === "Preparatoria").map(m => `<div class="p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">${m.nombre}</div>`).join("") || `<p class="text-xs" style="color:#6C7B8A">Sin materias.</p>`}
-          </div>
+        <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
+          <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Cargar materias rápidamente</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">Las materias de un ciclo no se repiten en el siguiente; se repiten cada 2 ciclos. Aquí puedes traerlas ya hechas (no duplica las que ya existen).</p>
+          ${estado.nivel === "Preparatoria" ? `
+          <button id="matPlan" class="px-3 py-1.5 rounded-lg text-xs font-semibold mb-2 mr-2" style="background:#EEF2FB; color:#1E3A8A" ${numerosCiclo.length ? "" : "disabled"}>Cargar plan de estudios (${numerosCiclo.length ? numerosCiclo.map(n => n + "º").join(", ") + " semestre" : "primero agrega los grados del ciclo"})</button>` : ""}
+          ${otrosCiclos.length ? `
+          <div class="flex gap-2 items-center">
+            <select id="matOrigen" class="px-2 py-1.5 rounded-lg text-xs border" style="border-color:#E1DED5">${otrosCiclos.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join("")}</select>
+            <button id="matCopiar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Copiar materias de este ciclo</button>
+          </div>` : ""}
         </div>
+
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Materias registradas (${delCiclo.length})</p>
+        ${delCiclo.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Este ciclo aún no tiene materias.</p>` : delCiclo.map(m => `
+          <div class="flex items-center justify-between p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">
+            <span>${escHtml(m.nombre)}</span>
+            <button class="matDel px-2 py-1 rounded-lg text-xs font-semibold" data-id="${m.id}" style="background:#F5E4E1; color:#B5453A">Quitar</button>
+          </div>`).join("")}
       </div>`;
 
-    document.getElementById("matGuardar").addEventListener("click", async () => {
+    enlazarNivel();
+    document.getElementById("matCiclo").addEventListener("change", e => { estado.ciclo = e.target.value; renderMaterias(cont, estado); });
+    const msg = () => document.getElementById("matMsg");
+    const existentes = new Set(delCiclo.map(m => m.nombre.trim().toUpperCase()));
+    async function insertar(nombres) {
+      const nuevas = [...new Set(nombres.map(n => n.trim().toUpperCase()))].filter(n => n && !existentes.has(n));
+      if (nuevas.length === 0) { msg().innerHTML = errBox("No hay materias nuevas que agregar: ya existen en este ciclo."); return; }
+      const { error } = await sb.from("materias").insert(nuevas.map(nombre => ({ nombre, nivel: estado.nivel, ciclo_escolar_id: estado.ciclo })));
+      if (error) { msg().innerHTML = errBox(escHtml(error.message)); return; }
+      renderMaterias(cont, estado);
+    }
+    document.getElementById("matGuardar").addEventListener("click", () => {
       const nombre = document.getElementById("matNombre").value.trim();
-      const nivel = document.getElementById("matNivel").value;
-      const msg = document.getElementById("matMsg");
-      msg.innerHTML = "";
-      if (!nombre) { msg.innerHTML = errBox("Escribe el nombre de la materia."); return; }
-      const { error } = await sb.from("materias").insert({ nombre, nivel });
-      if (error) { msg.innerHTML = errBox(error.message); return; }
-      renderMaterias(cont);
+      msg().innerHTML = "";
+      if (!nombre) { msg().innerHTML = errBox("Escribe el nombre de la materia."); return; }
+      if (existentes.has(nombre.toUpperCase())) { msg().innerHTML = errBox("Esa materia ya existe en este ciclo."); return; }
+      insertar([nombre]);
     });
+    const bp = document.getElementById("matPlan");
+    if (bp) bp.addEventListener("click", () => insertar(numerosCiclo.flatMap(n => PLAN_PREPA[n] || [])));
+    const bc = document.getElementById("matCopiar");
+    if (bc) bc.addEventListener("click", () => {
+      const origen = document.getElementById("matOrigen").value;
+      insertar(materias.filter(m => m.ciclo_escolar_id === origen).map(m => m.nombre));
+    });
+    document.querySelectorAll(".matDel").forEach(b => b.addEventListener("click", async () => {
+      if (!confirm("¿Quitar esta materia del ciclo?")) return;
+      const { error } = await sb.from("materias").delete().eq("id", b.dataset.id);
+      if (error) { msg().innerHTML = errBox(/foreign key|violates/i.test(error.message) ? "No se puede quitar: ya está asignada a un grupo." : escHtml(error.message)); return; }
+      renderMaterias(cont, estado);
+    }));
   }
 
   // ---------- Asignaciones ----------
@@ -3702,7 +3762,7 @@ function renderCatedraticos(main) {
 
       if (!grupoSel || !(grupos || []).find(g => g.id === grupoSel)) grupoSel = grupos && grupos[0] ? grupos[0].id : null;
 
-      const materiasNivel = todasMaterias.filter(m => m.nivel === nivelSel);
+      const materiasNivel = todasMaterias.filter(m => m.nivel === nivelSel && m.ciclo_escolar_id === cicloSel);
 
       let asignaciones = [];
       if (grupoSel) {
@@ -3731,6 +3791,7 @@ function renderCatedraticos(main) {
 
           <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
             <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nueva asignación</p>
+            ${materiasNivel.length === 0 ? `<p class="text-sm mb-2" style="color:#B5453A">Este ciclo no tiene materias. Primero agrégalas en la pestaña "Materias" para poder asignarlas.</p>` : ""}
             <div class="grid grid-cols-2 gap-2 mb-2">
               <select id="asProfesorSel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
                 ${profesores.map(p => `<option value="${p.id}">${p.nombre_completo}</option>`).join("")}
