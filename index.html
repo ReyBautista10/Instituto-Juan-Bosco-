@@ -1531,7 +1531,7 @@ function renderAlumnos(main) {
           <div class="p-3 rounded-xl bg-white border flex items-center justify-between mb-2" style="border-color:#E1DED5">
             <div>
               <p class="text-sm font-semibold" style="color:#1E3A8A">${c.nombre} ${c.activo ? '<span class="text-xs font-normal" style="color:#3F7A5E">(Activo)</span>' : ""}</p>
-              <p class="text-xs" style="color:#6C7B8A">${mesAnio(c.fecha_inicio)} a ${mesAnio(c.fecha_fin)}</p>
+              <p class="text-xs" style="color:#6C7B8A">${fechaDMY(c.fecha_inicio)} al ${fechaDMY(c.fecha_fin)}</p>
             </div>
             ${!c.activo ? `<button class="ccActivarBtn px-2 py-1 rounded-lg text-xs font-semibold" data-id="${c.id}" data-nivel="${nivel}" style="background:#F4F1EB; color:#1E3A8A">Marcar activo</button>` : ""}
           </div>`).join("");
@@ -1543,19 +1543,24 @@ function renderAlumnos(main) {
           <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nuevo ciclo escolar</p>
           <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
           <select id="ccNivel" class="w-full px-2 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
-            <option value="Secundaria">Secundaria (anual)</option>
-            <option value="Preparatoria">Preparatoria (semestral)</option>
+            <option value="Secundaria">Secundaria (1 ciclo = 1 año escolar)</option>
+            <option value="Preparatoria">Preparatoria (1 ciclo = 1 semestre)</option>
           </select>
-          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nombre del ciclo</label>
-          <input id="ccNombre" placeholder="Ej. 2026-2027 o 2026-2027 Sem 1" class="w-full px-2 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5" />
-          ${[["ccIni", "Inicio del ciclo"], ["ccFin", "Fin del ciclo"]].map(([p, rot]) => { const anioBase = new Date().getFullYear(); return `
-          <div class="p-2 rounded-lg mb-2" style="background:#F7F5EF">
-            <p class="text-xs font-semibold mb-1" style="color:#1E3A8A">${rot}</p>
-            <div class="grid grid-cols-2 gap-2">
-              <select id="${p}Mes" class="w-full px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5; background:#fff"><option value="">Mes</option>${["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].map((m, i) => `<option value="${String(i + 1).padStart(2, "0")}">${m}</option>`).join("")}</select>
-              <select id="${p}Anio" class="w-full px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5; background:#fff"><option value="">Año</option>${[-1, 0, 1, 2, 3].map(d => `<option value="${anioBase + d}">${anioBase + d}</option>`).join("")}</select>
-            </div>
-          </div>`; }).join("")}
+          <div id="ccSemWrap" style="display:none">
+            <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Semestre del año escolar</label>
+            <select id="ccSem" class="w-full px-2 py-2 rounded-lg text-sm mb-2 outline-none border" style="border-color:#E1DED5">
+              <option value="A">A (primer semestre)</option>
+              <option value="B">B (segundo semestre)</option>
+            </select>
+          </div>
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div><label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha de inicio</label>
+              <input id="ccIni" inputmode="numeric" maxlength="10" placeholder="dd/mm/aaaa" data-nomayus="1" class="w-full px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" /></div>
+            <div><label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Fecha final</label>
+              <input id="ccFin" inputmode="numeric" maxlength="10" placeholder="dd/mm/aaaa" data-nomayus="1" class="w-full px-2 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" /></div>
+          </div>
+          <div class="p-2 rounded-lg mb-2 text-sm" style="background:#EEF2FB; color:#1E3A8A">Nombre del ciclo: <strong id="ccNombreVista">—</strong></div>
+          <p class="text-xs mb-2" style="color:#6C7B8A" id="ccAyuda"></p>
           <div id="ccMsg"></div>
           <button id="ccGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
         </div>
@@ -1572,21 +1577,44 @@ function renderAlumnos(main) {
         </div>
       </div>`;
 
+    // Captura de fechas dd/mm/aaaa con barras automáticas
+    const mascara = el => el.addEventListener("input", () => {
+      const d = el.value.replace(/\D/g, "").slice(0, 8);
+      el.value = d.length > 4 ? d.slice(0, 2) + "/" + d.slice(2, 4) + "/" + d.slice(4) : d.length > 2 ? d.slice(0, 2) + "/" + d.slice(2) : d;
+      vista();
+    });
+    mascara(document.getElementById("ccIni")); mascara(document.getElementById("ccFin"));
+    const nombreCiclo = () => {
+      const nivel = document.getElementById("ccNivel").value;
+      const ini = fechaDesdeDMY(document.getElementById("ccIni").value);
+      if (!ini) return null;
+      const [y, m] = ini.split("-").map(Number);
+      const a = m >= 7 ? y : y - 1;   // año escolar que arranca en julio-diciembre
+      return `${a}-${a + 1}` + (nivel === "Preparatoria" ? " " + document.getElementById("ccSem").value : "");
+    };
+    function vista() {
+      const nivel = document.getElementById("ccNivel").value;
+      document.getElementById("ccSemWrap").style.display = nivel === "Preparatoria" ? "block" : "none";
+      document.getElementById("ccAyuda").textContent = nivel === "Preparatoria"
+        ? "Un año escolar de Preparatoria son 2 ciclos: A y B (por ejemplo 2026-2027 A y 2026-2027 B). Las materias se repiten cada 2 ciclos: A con A del año siguiente."
+        : "Un ciclo de Secundaria es un año escolar completo (por ejemplo 2026-2027).";
+      document.getElementById("ccNombreVista").textContent = nombreCiclo() || "— (escribe la fecha de inicio)";
+    }
+    document.getElementById("ccNivel").addEventListener("change", vista);
+    document.getElementById("ccSem").addEventListener("change", vista);
+    vista();
+
     document.getElementById("ccGuardar").addEventListener("click", async () => {
       const nivel = document.getElementById("ccNivel").value;
-      const nombre = document.getElementById("ccNombre").value.trim();
-      const ini = [document.getElementById("ccIniAnio").value, document.getElementById("ccIniMes").value];
-      const fi = [document.getElementById("ccFinAnio").value, document.getElementById("ccFinMes").value];
-      const inicio = ini[0] && ini[1] ? ini.join("-") : "";
-      const fin = fi[0] && fi[1] ? fi.join("-") : "";
+      const inicio = fechaDesdeDMY(document.getElementById("ccIni").value);
+      const fin = fechaDesdeDMY(document.getElementById("ccFin").value);
       const msg = document.getElementById("ccMsg");
       msg.innerHTML = "";
-      if (!nombre || !inicio || !fin) { msg.innerHTML = errBox("Completa el nombre y el mes y año de inicio y de fin."); return; }
-      if (fin < inicio) { msg.innerHTML = errBox("El mes de fin no puede ser anterior al de inicio."); return; }
-      // Se guarda el primer día del mes de inicio y el último día del mes de fin.
-      const [anioFin, mesFin] = fin.split("-").map(Number);
-      const ultimoDia = new Date(anioFin, mesFin, 0).getDate();
-      const { error } = await sb.from("ciclos_escolares").insert({ nivel, nombre, fecha_inicio: inicio + "-01", fecha_fin: `${fin}-${String(ultimoDia).padStart(2, "0")}` });
+      if (!inicio || !fin) { msg.innerHTML = errBox("Escribe fechas válidas de inicio y final con el formato dd/mm/aaaa."); return; }
+      if (fin <= inicio) { msg.innerHTML = errBox("La fecha final debe ser posterior a la fecha de inicio."); return; }
+      const nombre = nombreCiclo();
+      if (ciclos.some(c => c.nivel === nivel && String(c.nombre).trim().toUpperCase() === nombre.toUpperCase())) { msg.innerHTML = errBox(`Ya existe el ciclo ${nombre} de ${nivel}.`); return; }
+      const { error } = await sb.from("ciclos_escolares").insert({ nivel, nombre, fecha_inicio: inicio, fecha_fin: fin });
       if (error) { msg.innerHTML = errBox(error.message); return; }
       renderCiclos(cont);
     });
@@ -3654,6 +3682,16 @@ function renderCatedraticos(main) {
     const delCiclo = materias.filter(m => m.ciclo_escolar_id === estado.ciclo).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
     const numerosCiclo = [...new Set(grados.filter(g => g.ciclo_escolar_id === estado.ciclo).map(g => Number(g.numero)))].sort();
     const otrosCiclos = ciclos.filter(c => c.id !== estado.ciclo && materias.some(m => m.ciclo_escolar_id === c.id));
+    // Sugerencia de ciclo origen: Preparatoria repite cada 2 ciclos (A con A del año anterior); Secundaria, el ciclo inmediato anterior.
+    const cicloActual = ciclos.find(c => c.id === estado.ciclo);
+    let sugerido = null;
+    const mm = /^(\d{4})-(\d{4})(?: ([AB]))?$/.exec(String(cicloActual.nombre).trim());
+    if (mm) {
+      const objetivo = `${Number(mm[1]) - 1}-${Number(mm[2]) - 1}` + (mm[3] ? " " + mm[3] : "");
+      const c = otrosCiclos.find(x => String(x.nombre).trim() === objetivo);
+      if (c) sugerido = c.id;
+    }
+    if (!sugerido && estado.nivel === "Secundaria") { const c = otrosCiclos.find(x => x.fecha_inicio < cicloActual.fecha_inicio); if (c) sugerido = c.id; }
 
     cont.innerHTML = `
       <div class="max-w-lg">
@@ -3673,12 +3711,14 @@ function renderCatedraticos(main) {
 
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
           <p class="text-sm font-semibold mb-1" style="color:#1E3A8A">Cargar materias rápidamente</p>
-          <p class="text-xs mb-2" style="color:#6C7B8A">Las materias de un ciclo no se repiten en el siguiente; se repiten cada 2 ciclos. Aquí puedes traerlas ya hechas (no duplica las que ya existen).</p>
+          <p class="text-xs mb-2" style="color:#6C7B8A">${estado.nivel === "Preparatoria"
+            ? "En Preparatoria las materias se repiten cada 2 ciclos: el ciclo A repite las del ciclo A del año escolar anterior, y el B las del B."
+            : "En Secundaria las materias son las mismas cada ciclo, salvo que haya una reforma (después de copiarlas puedes agregar o quitar)."} No duplica las que ya existen.</p>
           ${estado.nivel === "Preparatoria" ? `
           <button id="matPlan" class="px-3 py-1.5 rounded-lg text-xs font-semibold mb-2 mr-2" style="background:#EEF2FB; color:#1E3A8A" ${numerosCiclo.length ? "" : "disabled"}>Cargar plan de estudios (${numerosCiclo.length ? numerosCiclo.map(n => n + "º").join(", ") + " semestre" : "primero agrega los grados del ciclo"})</button>` : ""}
           ${otrosCiclos.length ? `
           <div class="flex gap-2 items-center">
-            <select id="matOrigen" class="px-2 py-1.5 rounded-lg text-xs border" style="border-color:#E1DED5">${otrosCiclos.map(c => `<option value="${c.id}">${escHtml(c.nombre)}</option>`).join("")}</select>
+            <select id="matOrigen" class="px-2 py-1.5 rounded-lg text-xs border" style="border-color:#E1DED5">${otrosCiclos.map(c => `<option value="${c.id}" ${c.id === sugerido ? "selected" : ""}>${escHtml(c.nombre)}${c.id === sugerido ? " (sugerido)" : ""}</option>`).join("")}</select>
             <button id="matCopiar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Copiar materias de este ciclo</button>
           </div>` : ""}
         </div>
@@ -4080,6 +4120,17 @@ function imprimirElementos(els) {
 function imprimirSolo(id) {
   const el = id ? document.getElementById(id) : null;
   imprimirElementos(el ? [el] : [...document.querySelectorAll(".ib-imprimible")]);
+}
+
+// Fechas dd/mm/aaaa <-> ISO (aaaa-mm-dd)
+function fechaDMY(iso) { if (!iso) return ""; const [y, m, d] = String(iso).slice(0, 10).split("-"); return `${d}/${m}/${y}`; }
+function fechaDesdeDMY(txt) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(txt || "").trim());
+  if (!m) return null;
+  const d = Number(m[1]), mo = Number(m[2]), y = Number(m[3]);
+  const f = new Date(y, mo - 1, d);
+  if (y < 2000 || f.getFullYear() !== y || f.getMonth() !== mo - 1 || f.getDate() !== d) return null;
+  return `${m[3]}-${m[2]}-${m[1]}`;
 }
 
 function colALetras(n) {
