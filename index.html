@@ -3656,33 +3656,49 @@ function renderCatedraticos(main) {
     6: ["ORGANISMOS: ESTRUCTURAS Y PROCESOS HERENCIA Y EVOLUCIÓN BIOLÓGICA", "CONCIENCIA HISTÓRICA III. LA REALIDAD ACTUAL EN PERSPECTIVA HISTÓRICA", "TEMAS SELECTOS DE MATEMÁTICAS II", "ETIMOLOGÍAS GRECOLATINAS II", "CÁLCULO INTEGRAL", "PROBABILIDAD Y ESTADÍSTICA II", "CIENCIAS DE LA SALUD II", "PRODUCCIÓN ORAL", "PRODUCCIÓN DE TEXTOS", "ACTIVIDADES ARTÍSTICAS Y CULTURALES"],
   };
   async function renderMaterias(cont, estado) {
-    estado = estado || { nivel: "Secundaria", ciclo: null };
+    estado = estado || { nivel: "Secundaria", ciclo: null, grado: null };
     cont.innerHTML = `<p class="text-xs" style="color:#6C7B8A">Cargando…</p>`;
     const [mRes, cRes, gRes] = await Promise.all([
       sb.from("materias").select("*").order("nombre"),
       sb.from("ciclos_escolares").select("id, nombre, nivel, activo, fecha_inicio").order("fecha_inicio", { ascending: false }),
-      sb.from("grados").select("id, numero, ciclo_escolar_id"),
+      sb.from("grados").select("id, nombre, numero, ciclo_escolar_id").order("numero"),
     ]);
     if (mRes.error) { cont.innerHTML = errBox(escHtml(mRes.error.message)); return; }
-    const materias = mRes.data || [], ciclos = (cRes.data || []).filter(c => c.nivel === estado.nivel), grados = gRes.data || [];
-    if (!estado.ciclo || !ciclos.find(c => c.id === estado.ciclo)) { const a = ciclos.find(c => c.activo) || ciclos[0]; estado.ciclo = a ? a.id : null; }
+    const materias = mRes.data || [], todosGrados = gRes.data || [];
+    const ciclos = (cRes.data || []).filter(c => c.nivel === estado.nivel);
+    if (!estado.ciclo || !ciclos.find(c => c.id === estado.ciclo)) { const a = ciclos.find(c => c.activo) || ciclos[0]; estado.ciclo = a ? a.id : null; estado.grado = null; }
     const selNivel = `
       <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Nivel</label>
       <select id="matNivel" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
         <option ${estado.nivel === "Secundaria" ? "selected" : ""}>Secundaria</option>
         <option ${estado.nivel === "Preparatoria" ? "selected" : ""}>Preparatoria</option>
       </select>`;
-    const enlazarNivel = () => document.getElementById("matNivel").addEventListener("change", e => { estado.nivel = e.target.value; estado.ciclo = null; renderMaterias(cont, estado); });
+    const enlazarNivel = () => document.getElementById("matNivel").addEventListener("change", e => { estado.nivel = e.target.value; estado.ciclo = null; estado.grado = null; renderMaterias(cont, estado); });
 
     if (!estado.ciclo) {
       cont.innerHTML = `<div class="max-w-lg"><div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">${selNivel}
-        <p class="text-sm" style="color:#6C7B8A">No hay ningún ciclo escolar de ${estado.nivel}. Las materias pertenecen a un ciclo: créalo primero en "Alumnos y Grupos → Ciclos Escolares".</p></div></div>`;
+        <p class="text-sm" style="color:#6C7B8A">No hay ningún ciclo escolar de ${estado.nivel}. Las materias pertenecen a un ciclo y a un grado: crea primero el ciclo en "Alumnos y Grupos → Ciclos Escolares".</p></div></div>`;
       enlazarNivel(); return;
     }
-    const delCiclo = materias.filter(m => m.ciclo_escolar_id === estado.ciclo).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
-    const numerosCiclo = [...new Set(grados.filter(g => g.ciclo_escolar_id === estado.ciclo).map(g => Number(g.numero)))].sort();
+    const gradosCiclo = todosGrados.filter(g => g.ciclo_escolar_id === estado.ciclo).sort((a, b) => a.numero - b.numero);
+    const selCiclo = `
+      <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar</label>
+      <select id="matCiclo" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+        ${ciclos.map(c => `<option value="${c.id}" ${c.id === estado.ciclo ? "selected" : ""}>${escHtml(c.nombre)}${c.activo ? " (Activo)" : ""}</option>`).join("")}
+      </select>`;
+    const enlazarCiclo = () => document.getElementById("matCiclo").addEventListener("change", e => { estado.ciclo = e.target.value; estado.grado = null; renderMaterias(cont, estado); });
+    if (gradosCiclo.length === 0) {
+      cont.innerHTML = `<div class="max-w-lg"><div class="p-4 rounded-xl bg-white border" style="border-color:#E1DED5">${selNivel}${selCiclo}
+        <p class="text-sm" style="color:#B5453A">Este ciclo no tiene grados. Primero agrégalos en "Alumnos y Grupos → Grados" para poder registrar materias.</p></div></div>`;
+      enlazarNivel(); enlazarCiclo(); return;
+    }
+    if (!estado.grado || !gradosCiclo.find(g => g.id === estado.grado)) estado.grado = gradosCiclo[0].id;
+    const grado = gradosCiclo.find(g => g.id === estado.grado);
+    const delGrado = materias.filter(m => m.grado_id === grado.id).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    const contar = g => materias.filter(m => m.grado_id === g.id).length;
+
+    // Ciclos que ya tienen materias (para copiar). Preparatoria repite cada 2 ciclos; Secundaria, el inmediato anterior.
     const otrosCiclos = ciclos.filter(c => c.id !== estado.ciclo && materias.some(m => m.ciclo_escolar_id === c.id));
-    // Sugerencia de ciclo origen: Preparatoria repite cada 2 ciclos (A con A del año anterior); Secundaria, el ciclo inmediato anterior.
     const cicloActual = ciclos.find(c => c.id === estado.ciclo);
     let sugerido = null;
     const mm = /^(\d{4})-(\d{4})(?: ([AB]))?$/.exec(String(cicloActual.nombre).trim());
@@ -3696,14 +3712,14 @@ function renderCatedraticos(main) {
     cont.innerHTML = `
       <div class="max-w-lg">
         <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
-          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Materias del ciclo</p>
-          ${selNivel}
-          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">Ciclo escolar</label>
-          <select id="matCiclo" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
-            ${ciclos.map(c => `<option value="${c.id}" ${c.id === estado.ciclo ? "selected" : ""}>${escHtml(c.nombre)}${c.activo ? " (Activo)" : ""}</option>`).join("")}
+          <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Materias por grado</p>
+          ${selNivel}${selCiclo}
+          <label class="block text-xs font-semibold mb-1" style="color:#6C7B8A">${estado.nivel === "Preparatoria" ? "Semestre" : "Grado"}</label>
+          <select id="matGrado" class="px-3 py-2 rounded-lg text-sm mb-3 outline-none border" style="border-color:#E1DED5">
+            ${gradosCiclo.map(g => `<option value="${g.id}" ${g.id === estado.grado ? "selected" : ""}>${escHtml(g.nombre)} (${contar(g)} materias)</option>`).join("")}
           </select>
           <div class="flex gap-2">
-            <input id="matNombre" placeholder="Nombre de la materia" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
+            <input id="matNombre" placeholder="Nombre de la materia de ${escHtml(grado.nombre)}" class="flex-1 px-3 py-2 rounded-lg text-sm outline-none border" style="border-color:#E1DED5" />
             <button id="matGuardar" class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:#1E3A8A; color:#fff">Agregar</button>
           </div>
           <div id="matMsg" class="mt-2"></div>
@@ -3715,30 +3731,35 @@ function renderCatedraticos(main) {
             ? "En Preparatoria las materias se repiten cada 2 ciclos: el ciclo A repite las del ciclo A del año escolar anterior, y el B las del B."
             : "En Secundaria las materias son las mismas cada ciclo, salvo que haya una reforma (después de copiarlas puedes agregar o quitar)."} No duplica las que ya existen.</p>
           ${estado.nivel === "Preparatoria" ? `
-          <button id="matPlan" class="px-3 py-1.5 rounded-lg text-xs font-semibold mb-2 mr-2" style="background:#EEF2FB; color:#1E3A8A" ${numerosCiclo.length ? "" : "disabled"}>Cargar plan de estudios (${numerosCiclo.length ? numerosCiclo.map(n => n + "º").join(", ") + " semestre" : "primero agrega los grados del ciclo"})</button>` : ""}
+          <div class="flex gap-2 flex-wrap mb-2">
+            <button id="matPlanUno" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Plan de ${escHtml(grado.nombre)}</button>
+            <button id="matPlanTodos" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Plan de todos los semestres del ciclo (${gradosCiclo.map(g => g.numero + "º").join(", ")})</button>
+          </div>` : ""}
           ${otrosCiclos.length ? `
-          <div class="flex gap-2 items-center">
+          <div class="flex gap-2 items-center flex-wrap">
             <select id="matOrigen" class="px-2 py-1.5 rounded-lg text-xs border" style="border-color:#E1DED5">${otrosCiclos.map(c => `<option value="${c.id}" ${c.id === sugerido ? "selected" : ""}>${escHtml(c.nombre)}${c.id === sugerido ? " (sugerido)" : ""}</option>`).join("")}</select>
-            <button id="matCopiar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Copiar materias de este ciclo</button>
+            <button id="matCopiar" class="px-3 py-1.5 rounded-lg text-xs font-semibold" style="background:#EEF2FB; color:#1E3A8A">Copiar materias de este ciclo (todos los grados)</button>
           </div>` : ""}
         </div>
 
-        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Materias registradas (${delCiclo.length})</p>
-        ${delCiclo.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Este ciclo aún no tiene materias.</p>` : delCiclo.map(m => `
+        <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">${escHtml(grado.nombre)}: ${delGrado.length} materia(s)</p>
+        ${delGrado.length === 0 ? `<p class="text-sm" style="color:#6C7B8A">Este grado aún no tiene materias.</p>` : delGrado.map(m => `
           <div class="flex items-center justify-between p-2 rounded-lg bg-white border mb-1 text-sm" style="border-color:#E1DED5; color:#1E3A8A">
             <span>${escHtml(m.nombre)}</span>
             <button class="matDel px-2 py-1 rounded-lg text-xs font-semibold" data-id="${m.id}" style="background:#F5E4E1; color:#B5453A">Quitar</button>
           </div>`).join("")}
       </div>`;
 
-    enlazarNivel();
-    document.getElementById("matCiclo").addEventListener("change", e => { estado.ciclo = e.target.value; renderMaterias(cont, estado); });
+    enlazarNivel(); enlazarCiclo();
+    document.getElementById("matGrado").addEventListener("change", e => { estado.grado = e.target.value; renderMaterias(cont, estado); });
     const msg = () => document.getElementById("matMsg");
-    const existentes = new Set(delCiclo.map(m => m.nombre.trim().toUpperCase()));
-    async function insertar(nombres) {
-      const nuevas = [...new Set(nombres.map(n => n.trim().toUpperCase()))].filter(n => n && !existentes.has(n));
-      if (nuevas.length === 0) { msg().innerHTML = errBox("No hay materias nuevas que agregar: ya existen en este ciclo."); return; }
-      const { error } = await sb.from("materias").insert(nuevas.map(nombre => ({ nombre, nivel: estado.nivel, ciclo_escolar_id: estado.ciclo })));
+    // filas: [{ grado, nombre }]
+    async function insertar(filas) {
+      const ya = new Set(materias.filter(m => m.ciclo_escolar_id === estado.ciclo).map(m => m.grado_id + "|" + m.nombre.trim().toUpperCase()));
+      const nuevas = []; const vistos = new Set();
+      filas.forEach(f => { const n = f.nombre.trim().toUpperCase(); const k = f.grado.id + "|" + n; if (n && !ya.has(k) && !vistos.has(k)) { vistos.add(k); nuevas.push({ nombre: n, nivel: estado.nivel, ciclo_escolar_id: estado.ciclo, grado_id: f.grado.id }); } });
+      if (nuevas.length === 0) { msg().innerHTML = errBox("No hay materias nuevas que agregar: ya existen."); return; }
+      const { error } = await sb.from("materias").insert(nuevas);
       if (error) { msg().innerHTML = errBox(escHtml(error.message)); return; }
       renderMaterias(cont, estado);
     }
@@ -3746,18 +3767,31 @@ function renderCatedraticos(main) {
       const nombre = document.getElementById("matNombre").value.trim();
       msg().innerHTML = "";
       if (!nombre) { msg().innerHTML = errBox("Escribe el nombre de la materia."); return; }
-      if (existentes.has(nombre.toUpperCase())) { msg().innerHTML = errBox("Esa materia ya existe en este ciclo."); return; }
-      insertar([nombre]);
+      if (delGrado.some(m => m.nombre.trim().toUpperCase() === nombre.toUpperCase())) { msg().innerHTML = errBox("Esa materia ya existe en este grado."); return; }
+      insertar([{ grado, nombre }]);
     });
-    const bp = document.getElementById("matPlan");
-    if (bp) bp.addEventListener("click", () => insertar(numerosCiclo.flatMap(n => PLAN_PREPA[n] || [])));
+    const b1 = document.getElementById("matPlanUno");
+    if (b1) b1.addEventListener("click", () => {
+      const lista = PLAN_PREPA[grado.numero];
+      if (!lista) { msg().innerHTML = errBox("No hay plan de estudios cargado para este semestre."); return; }
+      insertar(lista.map(nombre => ({ grado, nombre })));
+    });
+    const b2 = document.getElementById("matPlanTodos");
+    if (b2) b2.addEventListener("click", () => insertar(gradosCiclo.flatMap(g => (PLAN_PREPA[g.numero] || []).map(nombre => ({ grado: g, nombre })))));
     const bc = document.getElementById("matCopiar");
     if (bc) bc.addEventListener("click", () => {
       const origen = document.getElementById("matOrigen").value;
-      insertar(materias.filter(m => m.ciclo_escolar_id === origen).map(m => m.nombre));
+      const numPorGrado = new Map(todosGrados.filter(g => g.ciclo_escolar_id === origen).map(g => [g.id, g.numero]));
+      const filas = [];
+      materias.filter(m => m.ciclo_escolar_id === origen).forEach(m => {
+        const destino = gradosCiclo.find(g => g.numero === numPorGrado.get(m.grado_id));
+        if (destino) filas.push({ grado: destino, nombre: m.nombre });
+      });
+      if (filas.length === 0) { msg().innerHTML = errBox("Ese ciclo no tiene materias en grados equivalentes a los de este ciclo."); return; }
+      insertar(filas);
     });
     document.querySelectorAll(".matDel").forEach(b => b.addEventListener("click", async () => {
-      if (!confirm("¿Quitar esta materia del ciclo?")) return;
+      if (!confirm("¿Quitar esta materia?")) return;
       const { error } = await sb.from("materias").delete().eq("id", b.dataset.id);
       if (error) { msg().innerHTML = errBox(/foreign key|violates/i.test(error.message) ? "No se puede quitar: ya está asignada a un grupo." : escHtml(error.message)); return; }
       renderMaterias(cont, estado);
@@ -3797,12 +3831,13 @@ function renderCatedraticos(main) {
         return;
       }
 
-      const { data: grupos, error: errGrupos } = await sb.from("grupos").select("id, letra, grados(nombre)").eq("ciclo_escolar_id", cicloSel).order("letra");
+      const { data: grupos, error: errGrupos } = await sb.from("grupos").select("id, letra, grado_id, grados(nombre)").eq("ciclo_escolar_id", cicloSel).order("letra");
       if (errGrupos) { cont.innerHTML = errBox(errGrupos.message); return; }
 
       if (!grupoSel || !(grupos || []).find(g => g.id === grupoSel)) grupoSel = grupos && grupos[0] ? grupos[0].id : null;
 
-      const materiasNivel = todasMaterias.filter(m => m.nivel === nivelSel && m.ciclo_escolar_id === cicloSel);
+      const gradoDelGrupo = (grupos || []).find(g => g.id === grupoSel)?.grado_id;
+      const materiasNivel = todasMaterias.filter(m => m.nivel === nivelSel && m.ciclo_escolar_id === cicloSel && m.grado_id === gradoDelGrupo);
 
       let asignaciones = [];
       if (grupoSel) {
@@ -3831,7 +3866,7 @@ function renderCatedraticos(main) {
 
           <div class="p-4 rounded-xl bg-white border mb-3" style="border-color:#E1DED5">
             <p class="text-sm font-semibold mb-2" style="color:#1E3A8A">Nueva asignación</p>
-            ${materiasNivel.length === 0 ? `<p class="text-sm mb-2" style="color:#B5453A">Este ciclo no tiene materias. Primero agrégalas en la pestaña "Materias" para poder asignarlas.</p>` : ""}
+            ${materiasNivel.length === 0 ? `<p class="text-sm mb-2" style="color:#B5453A">Este grado no tiene materias en este ciclo. Primero agrégalas en la pestaña "Materias" para poder asignarlas.</p>` : ""}
             <div class="grid grid-cols-2 gap-2 mb-2">
               <select id="asProfesorSel" class="px-2 py-1.5 rounded-lg text-sm outline-none border" style="border-color:#E1DED5">
                 ${profesores.map(p => `<option value="${p.id}">${p.nombre_completo}</option>`).join("")}
